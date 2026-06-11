@@ -6,6 +6,7 @@
   audioBackend ? "pulse",
   inputDevice ? null,
   leaderKey ? "KEY_RIGHTCTRL",
+  leaderGraceSeconds ? 8.0,
   startPhrase ? "start dictation",
   stopPhrase ? "stop dictation",
   moonshineVoice,
@@ -79,6 +80,9 @@ let
     "--set"
     "MOONSHINE_LEADER_KEY"
     leaderKey
+    "--set"
+    "MOONSHINE_LEADER_GRACE_SECONDS"
+    (toString leaderGraceSeconds)
   ]
   ++ [
     "--set"

@@ -33,7 +33,7 @@ INPUT_DEVICE = os.environ.get("MOONSHINE_INPUT_DEVICE") or None
 START_PHRASE = os.environ.get("MOONSHINE_START_PHRASE", "start dictation")
 STOP_PHRASE = os.environ.get("MOONSHINE_STOP_PHRASE", "stop dictation")
 LEADER_KEY = os.environ.get("MOONSHINE_LEADER_KEY") or None
-LEADER_GRACE_SECONDS = float(os.environ.get("MOONSHINE_LEADER_GRACE_SECONDS", "2.5"))
+LEADER_GRACE_SECONDS = float(os.environ.get("MOONSHINE_LEADER_GRACE_SECONDS", "8.0"))
 SAMPLE_RATE = 16000
 NOTIFY = os.environ["NOTIFY_SEND"]
 PACTL = os.environ["PACTL"]
@@ -45,6 +45,10 @@ _notify_id = None
 
 _corrections = dlib.load_corrections()
 _vocabulary = dlib.load_vocabulary()
+
+
+def log_msg(message):
+    print(f"moonshine: {message}", file=sys.stderr, flush=True)
 
 
 def _reload():
@@ -465,6 +469,16 @@ def _on_sigusr1(_sig, _frame):
 
 signal.signal(signal.SIGUSR1, _on_sigusr1)
 
+
+def _restart_daemon(reason):
+    log_msg(f"{reason}; restarting daemon")
+    try:
+        notify_msg("Moonshine restarting", reason, timeout=2500, urgency="normal")
+    except Exception:
+        pass
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 _prev = ""
 _dictating = False
 
@@ -479,7 +493,9 @@ def _phrase_re(phrase):
 _START_RE = _phrase_re(START_PHRASE)
 _STOP_RE = _phrase_re(STOP_PHRASE)
 _leader_recent_until = 0.0
+_leader_last_seen = 0.0
 _leader_available = LEADER_KEY is None
+_leader_reject_notice_at = 0.0
 
 _last_audio = time.time()
 # Heartbeat stamped each time the audio loop finishes an iteration. The loop
@@ -509,9 +525,10 @@ def _supports_key(device, key_code):
 
 
 def _watch_leader_key():
-    global _leader_recent_until, _leader_available
+    global _leader_recent_until, _leader_last_seen, _leader_available
     key_code = _leader_code()
     if key_code is None:
+        log_msg(f"unknown leader key code: {LEADER_KEY}")
         notify_msg(
             "Moonshine leader key unavailable",
             f"Unknown key code: {LEADER_KEY}",
@@ -532,6 +549,7 @@ def _watch_leader_key():
             device.close()
 
     if not devices:
+        log_msg(f"no readable input device exposes leader key {LEADER_KEY}")
         notify_msg(
             "Moonshine leader key unavailable",
             f"No readable input device exposes {LEADER_KEY}",
@@ -541,6 +559,8 @@ def _watch_leader_key():
         return
 
     _leader_available = True
+    device_names = ", ".join(f"{device.path} ({device.name})" for device in devices)
+    log_msg(f"watching leader key {LEADER_KEY} on {device_names}")
     while True:
         try:
             readable, _, _ = select.select(devices, [], [], 0.25)
@@ -550,6 +570,7 @@ def _watch_leader_key():
         for device in devices:
             try:
                 if key_code in device.active_keys():
+                    _leader_last_seen = now
                     _leader_recent_until = now + LEADER_GRACE_SECONDS
             except OSError:
                 pass
@@ -558,7 +579,11 @@ def _watch_leader_key():
                 for event in device.read():
                     if event.type == evdev.ecodes.EV_KEY and event.code == key_code:
                         if event.value:
-                            _leader_recent_until = time.time() + LEADER_GRACE_SECONDS
+                            now = time.time()
+                            _leader_last_seen = now
+                            _leader_recent_until = now + LEADER_GRACE_SECONDS
+                            if event.value == 1:
+                                log_msg(f"saw leader key {LEADER_KEY}")
             except OSError:
                 pass
 
@@ -575,10 +600,38 @@ def _leader_allows_start():
     return time.time() <= _leader_recent_until
 
 
+def _leader_status():
+    if LEADER_KEY is None:
+        return "disabled"
+    if not _leader_available:
+        return "unavailable"
+    if _leader_last_seen == 0.0:
+        return "never seen"
+    age = time.time() - _leader_last_seen
+    return f"last seen {age:.1f}s ago"
+
+
+def _notify_start_rejected():
+    global _leader_reject_notice_at
+    now = time.time()
+    if now - _leader_reject_notice_at < 5.0:
+        return
+    _leader_reject_notice_at = now
+    status = _leader_status()
+    log_msg(f"start phrase rejected by leader gate: {LEADER_KEY} ({status})")
+    notify_msg(
+        "Moonshine start ignored",
+        f'Hold {LEADER_KEY} while saying "{START_PHRASE}" ({status}).',
+        timeout=3500,
+        urgency="normal",
+    )
+
+
 def _check_trigger(text):
     global _dictating
     if _START_RE.search(text):
         if not _leader_allows_start():
+            _notify_start_rejected()
             return True
         if not _dictating:
             _dictating = True
@@ -669,7 +722,7 @@ def _watchdog():
         loop_stuck = now - _loop_heartbeat >= _STALL_TIMEOUT
         audio_live = now - _last_audio < _STALL_TIMEOUT
         if loop_stuck and audio_live:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            _restart_daemon("Audio loop stopped making progress")
 
 
 threading.Thread(target=_watchdog, daemon=True).start()
@@ -722,12 +775,20 @@ def _pulse_reader():
     ]
     if INPUT_DEVICE is not None:
         cmd.append(f"--device={INPUT_DEVICE}")
-    _pulse_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    while True:
-        data = _pulse_proc.stdout.read(chunk_bytes)
-        if len(data) != chunk_bytes:
-            break
-        _enqueue_audio(np.frombuffer(data, dtype=np.float32))
+    try:
+        _pulse_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        while True:
+            data = _pulse_proc.stdout.read(chunk_bytes)
+            if len(data) != chunk_bytes:
+                break
+            _enqueue_audio(np.frombuffer(data, dtype=np.float32))
+    except Exception as e:
+        _restart_daemon(f"PulseAudio capture failed: {e}")
+    finally:
+        if _pulse_proc is not None and _pulse_proc.poll() is None:
+            _pulse_proc.terminate()
+        _pulse_proc = None
+    _restart_daemon("PulseAudio capture ended")
 
 
 stream = transcriber.get_default_stream()

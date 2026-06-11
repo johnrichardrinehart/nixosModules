@@ -169,6 +169,16 @@ in
       '';
     };
 
+    leaderGraceSeconds = lib.mkOption {
+      type = lib.types.float;
+      default = 8.0;
+      description = ''
+        Number of seconds after the leader key is seen during which startPhrase
+        may begin dictation. This compensates for speech recognition latency
+        between speaking the phrase and receiving the transcript.
+      '';
+    };
+
     startPhrase = lib.mkOption {
       type = lib.types.str;
       default = "start dictation";
@@ -189,6 +199,7 @@ in
         inherit (cfg) audioBackend;
         inherit (cfg) inputDevice;
         inherit (cfg) leaderKey;
+        inherit (cfg) leaderGraceSeconds;
         inherit (cfg) startPhrase;
         inherit (cfg) stopPhrase;
         moonshineVoice = pkgs.dev.johnrinehart.moonshine-voice.override {
