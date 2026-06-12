@@ -54,6 +54,9 @@ let
 
     [global_search]
     recent_days = 90
+
+    [instances]
+    allow_multiple = true
   '';
 in
 {
