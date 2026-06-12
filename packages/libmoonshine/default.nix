@@ -67,13 +67,13 @@ assert lib.assertMsg (builtins.elem decoderProvider.provider providerNames)
   "libmoonshine executionProviders.decoder.provider must be one of: ${lib.concatStringsSep ", " providerNames}";
 stdenv.mkDerivation {
   pname = "libmoonshine";
-  version = "0.0.59";
+  version = "0.0.62";
 
   src = fetchFromGitHub {
     owner = "moonshine-ai";
     repo = "moonshine";
-    tag = "v0.0.59";
-    hash = "sha256-lEek4275OMtVpMstl1NXfUPPV8SJQwUdRa6LKhuYGfY=";
+    tag = "v0.0.62";
+    hash = "sha256-bpep4ZyAQbg3dtPnUKnyYmtNftgAGZZy5Sl76OS09f4=";
   };
 
   sourceRoot = "source/core";

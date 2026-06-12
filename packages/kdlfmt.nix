@@ -13,7 +13,7 @@ let
   kdl-rs = fetchFromGitHub {
     owner = "johnrichardrinehart";
     repo = "kdl-rs";
-    rev = "b08bcc966ad1c1c004ba2b6d1f0ceb373271e8ea";
+    rev = "f3b0eb88841430623208fb2a77a270d2df432ddd";
     hash = "sha256-EBuidVvvZmHhqWESmfdk8ZZN3UCGmI1lwZ3i9O9qTCU=";
   };
   kdl-rs-cargo-patch = writeText "kdlfmt-kdl-rs.patch" ''

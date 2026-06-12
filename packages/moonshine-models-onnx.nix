@@ -56,7 +56,7 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "moonshine-models-onnx";
-  version = "0.0.59";
+  version = "0.0.62";
 
   dontUnpack = true;
 
