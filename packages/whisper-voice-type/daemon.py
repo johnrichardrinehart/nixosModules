@@ -658,30 +658,35 @@ def _check_trigger(text):
     return False
 
 
-def _type_diff(new_text):
+def _render(target):
+    # Reconcile the on-screen text (tracked in _prev) to `target`: keep the
+    # common prefix, backspace the divergent tail, and type the replacement
+    # suffix. Both the streaming and completion paths funnel through here so a
+    # line is only ever typed once, then patched in place as it is refined.
     global _prev
-    if _abort_pending.is_set() or time.time() < _abort_until:
-        return
-    if not _dictating or not new_text or new_text == _prev:
-        return
-    new_text = _transcribe(new_text)
     common = 0
     while (
-        common < len(_prev)
-        and common < len(new_text)
-        and _prev[common] == new_text[common]
+        common < len(_prev) and common < len(target) and _prev[common] == target[common]
     ):
         common += 1
-    if common < len(new_text) and new_text[common] == " ":
+    if common < len(target) and target[common] == " ":
         while common > 0 and _prev[common - 1] != " ":
             common -= 1
     n_back = len(_prev) - common
     if n_back:
         wtype(*(["-k", "BackSpace"] * n_back))
-    suffix = new_text[common:]
+    suffix = target[common:]
     if suffix:
         wtype_text(suffix)
-    _prev = new_text
+    _prev = target
+
+
+def _type_diff(new_text):
+    if _abort_pending.is_set() or time.time() < _abort_until:
+        return
+    if not _dictating or not new_text or new_text == _prev:
+        return
+    _render(_transcribe(new_text))
 
 
 class Listener(TranscriptEventListener):
@@ -711,7 +716,13 @@ class Listener(TranscriptEventListener):
             if _dictating and raw_text and time.time() >= _abort_until:
                 corrected = _transcribe(raw_text)
                 dlib.log_transcript(raw_text, corrected)
-                wtype_text(corrected + " ")
+                # Reconcile against whatever the streaming path already typed
+                # for this line instead of retyping it wholesale: on_line_text_changed
+                # has usually already emitted (most of) `corrected`, so a blind
+                # wtype_text here would duplicate the entire line. _render keeps
+                # the common prefix and only types the trailing space (or patches
+                # the tail if the final transcript refined the partial).
+                _render(corrected + " ")
             _prev = ""
 
 
