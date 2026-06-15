@@ -12,8 +12,6 @@ let
   frameworkEc =
     if hasF9DisplayToggle then
       pkgs.dev.johnrinehart.framework-ec.override {
-        rev = "f6620a8200e8d1b349078710b271540b5b8a1a18";
-        hash = "sha256-0raKJJug3T22XV1sX0nwIjx4ZOKlI3uoyLYOlMGdI/I=";
         supportsDisplayToggleKeyHid = true;
         patches = [
           # Make Framework F9's Project action emit a HID display-toggle event

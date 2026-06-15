@@ -14,7 +14,7 @@
   perl,
   which,
   pname ? "framework-ec",
-  version ? "unstable-2026-05-09",
+  version ? "unstable-2025-05-28",
   rev ? "f6620a8200e8d1b349078710b271540b5b8a1a18",
   hash ? "sha256-0raKJJug3T22XV1sX0nwIjx4ZOKlI3uoyLYOlMGdI/I=",
   board ? "hx20",
