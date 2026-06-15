@@ -79,6 +79,7 @@ signal.signal(signal.SIGHUP, _on_sighup)
 
 _abort_pending = threading.Event()
 _abort_until = 0.0
+_shutting_down = False
 
 _TRAY_COLORS = {
     "loading": (128, 128, 128, 255),
@@ -397,9 +398,17 @@ def notify_close():
 
 
 def _on_sigterm(_sig, _frame):
+    global _shutting_down
+    _shutting_down = True
+    pulse_proc = globals().get("_pulse_proc")
+    if pulse_proc is not None:
+        try:
+            pulse_proc.terminate()
+        except ProcessLookupError:
+            pass
     notify_close()
     notify_msg("Moonshine stopped", timeout=2000, urgency="low")
-    sys.exit(0)
+    os._exit(0)
 
 
 signal.signal(signal.SIGTERM, _on_sigterm)
@@ -471,6 +480,8 @@ signal.signal(signal.SIGUSR1, _on_sigusr1)
 
 
 def _restart_daemon(reason):
+    if _shutting_down:
+        os._exit(0)
     log_msg(f"{reason}; restarting daemon")
     try:
         notify_msg("Moonshine restarting", reason, timeout=2500, urgency="normal")
@@ -728,15 +739,19 @@ def _watchdog():
 threading.Thread(target=_watchdog, daemon=True).start()
 
 # Bounded so a backend that falls behind real time (e.g. CPU fallback) cannot
-# accumulate an ever-growing backlog and end up transcribing minutes-old audio.
-# Each chunk is 0.1 s, so this caps the queue at _MAX_QUEUE_SECONDS of audio.
-_MAX_QUEUE_SECONDS = 15.0
-audio_q = queue.Queue(maxsize=int(_MAX_QUEUE_SECONDS / 0.1))
+# accumulate an ever-growing backlog and end up transcribing stale commands.
+_CHUNK_SECONDS = 0.1
+_MAX_QUEUE_SECONDS = 3.0
+_MAX_UPDATE_BATCH_SECONDS = 0.5
+_MAX_QUEUE_CHUNKS = int(_MAX_QUEUE_SECONDS / _CHUNK_SECONDS)
+_MAX_UPDATE_BATCH_CHUNKS = int(_MAX_UPDATE_BATCH_SECONDS / _CHUNK_SECONDS)
+audio_q = queue.Queue(maxsize=_MAX_QUEUE_CHUNKS)
 _dropped_audio = 0
+_last_drop_log = 0.0
 
 
 def _enqueue_audio(samples):
-    global _last_audio, _dropped_audio
+    global _last_audio, _dropped_audio, _last_drop_log
     _last_audio = time.time()
     try:
         audio_q.put_nowait(samples.copy())
@@ -752,6 +767,13 @@ def _enqueue_audio(samples):
         except queue.Full:
             pass
         _dropped_audio += 1
+        now = time.time()
+        if now - _last_drop_log >= 5.0:
+            _last_drop_log = now
+            log_msg(
+                "audio inference is behind; dropped "
+                f"{_dropped_audio} chunks total to keep capture live"
+            )
 
 
 def callback(indata, frames, time_info, status):
@@ -788,6 +810,8 @@ def _pulse_reader():
         if _pulse_proc is not None and _pulse_proc.poll() is None:
             _pulse_proc.terminate()
         _pulse_proc = None
+    if _shutting_down:
+        return
     _restart_daemon("PulseAudio capture ended")
 
 
@@ -824,11 +848,22 @@ with capture_context:
                 notify_msg("Aborted", timeout=2000, urgency="low")
                 continue
             got_audio = False
+            chunks_added = 0
             while True:
+                if chunks_added >= _MAX_UPDATE_BATCH_CHUNKS:
+                    break
+                if audio_q.qsize() > _MAX_QUEUE_CHUNKS - _MAX_UPDATE_BATCH_CHUNKS:
+                    try:
+                        audio_q.get_nowait()
+                        _dropped_audio += 1
+                    except queue.Empty:
+                        pass
+                    continue
                 try:
                     chunk = audio_q.get_nowait()
                     stream.add_audio(chunk.tolist(), SAMPLE_RATE)
                     got_audio = True
+                    chunks_added += 1
                 except queue.Empty:
                     break
             if got_audio:
