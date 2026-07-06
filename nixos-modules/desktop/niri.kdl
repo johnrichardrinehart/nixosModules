@@ -68,6 +68,13 @@ cursor {
     xcursor-theme "@xcursor_theme@"
     xcursor-size 24
 }
+debug {
+    // Work around Framework/Thunderbolt display resume cases where a docked
+    // external monitor remains DRM-connected but disabled and missing from
+    // `niri msg outputs`. This forces a connector teardown/rebuild only when
+    // niri resumes after suspend or a TTY switch; it is not a manual rescan.
+    force-disable-connectors-on-resume
+}
 // You can configure outputs by their name, which you can find
 // by running `niri msg outputs` while inside a niri instance.
 // The built-in laptop monitor is usually called "eDP-1".
