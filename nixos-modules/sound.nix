@@ -6,6 +6,77 @@
 }:
 let
   cfg = config.dev.johnrinehart.sound;
+  highpassNode = {
+    type = "builtin";
+    name = "highpass";
+    label = "bq_highpass";
+    control = {
+      "Freq" = cfg.rnnoise.highpass.frequency;
+      "Q" = cfg.rnnoise.highpass.q;
+    };
+  };
+  rnnoiseNode = {
+    type = "ladspa";
+    name = "rnnoise";
+    plugin = "librnnoise_ladspa";
+    label = "noise_suppressor_mono";
+    control = {
+      "VAD Threshold (%)" = cfg.rnnoise.vadThreshold;
+      "VAD Grace Period (ms)" = cfg.rnnoise.vadGracePeriod;
+      "Retroactive VAD Grace (ms)" = cfg.rnnoise.retroactiveVadGrace;
+    };
+  };
+  deepfilterNode = {
+    type = "ladspa";
+    name = "deepfilter";
+    plugin = "libdeep_filter_ladspa";
+    label = "deep_filter_mono";
+    control = {
+      "Attenuation Limit (dB)" = cfg.rnnoise.deepfilter.attenuationLimit;
+      "Min processing threshold (dB)" = cfg.rnnoise.deepfilter.minProcessingThreshold;
+      "Max ERB processing threshold (dB)" = cfg.rnnoise.deepfilter.maxErbProcessingThreshold;
+      "Max DF processing threshold (dB)" = cfg.rnnoise.deepfilter.maxDfProcessingThreshold;
+      "Min Processing Buffer (frames)" = cfg.rnnoise.deepfilter.minProcessingBuffer;
+      "Post Filter Beta" = cfg.rnnoise.deepfilter.postFilterBeta;
+    };
+  };
+  deepfilterBeforeRnnoise = cfg.rnnoise.deepfilter.position == "beforeRnnoise";
+  deepfilterAfterRnnoise = cfg.rnnoise.deepfilter.position == "afterRnnoise";
+  rnnoiseNodes =
+    lib.optionals cfg.rnnoise.highpass.enable [ highpassNode ]
+    ++ lib.optionals (cfg.rnnoise.deepfilter.enable && deepfilterBeforeRnnoise) [ deepfilterNode ]
+    ++ [ rnnoiseNode ]
+    ++ lib.optionals (cfg.rnnoise.deepfilter.enable && deepfilterAfterRnnoise) [ deepfilterNode ];
+  rnnoiseLinks =
+    lib.optionals
+      (cfg.rnnoise.highpass.enable && cfg.rnnoise.deepfilter.enable && deepfilterBeforeRnnoise)
+      [
+        {
+          output = "highpass:Out";
+          input = "deepfilter:Audio In";
+        }
+      ]
+    ++
+      lib.optionals
+        (cfg.rnnoise.highpass.enable && (!cfg.rnnoise.deepfilter.enable || deepfilterAfterRnnoise))
+        [
+          {
+            output = "highpass:Out";
+            input = "rnnoise:Input";
+          }
+        ]
+    ++ lib.optionals (cfg.rnnoise.deepfilter.enable && deepfilterBeforeRnnoise) [
+      {
+        output = "deepfilter:Audio Out";
+        input = "rnnoise:Input";
+      }
+    ]
+    ++ lib.optionals (cfg.rnnoise.deepfilter.enable && deepfilterAfterRnnoise) [
+      {
+        output = "rnnoise:Output";
+        input = "deepfilter:Audio In";
+      }
+    ];
 in
 {
   options.dev.johnrinehart.sound = {
@@ -24,6 +95,83 @@ in
           over the built-in microphone by raising priority.session on matching
           Audio/Source nodes.
         '';
+      };
+      vadThreshold = lib.mkOption {
+        type = lib.types.float;
+        default = 50.0;
+        description = "RNNoise VAD threshold percentage.";
+      };
+      vadGracePeriod = lib.mkOption {
+        type = lib.types.float;
+        default = 500.0;
+        description = "RNNoise VAD grace period in milliseconds.";
+      };
+      retroactiveVadGrace = lib.mkOption {
+        type = lib.types.float;
+        default = 100.0;
+        description = "RNNoise retroactive VAD grace period in milliseconds.";
+      };
+      highpass = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = "Enable a builtin PipeWire high-pass filter before RNNoise.";
+        };
+        frequency = lib.mkOption {
+          type = lib.types.float;
+          default = 120.0;
+          description = "High-pass cutoff frequency in Hz when rnnoise.highpass.enable is true.";
+        };
+        q = lib.mkOption {
+          type = lib.types.float;
+          default = 0.707;
+          description = "High-pass biquad Q value when rnnoise.highpass.enable is true.";
+        };
+      };
+      deepfilter = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = "Enable DeepFilterNet in the virtual microphone filter chain.";
+        };
+        position = lib.mkOption {
+          type = lib.types.enum [
+            "beforeRnnoise"
+            "afterRnnoise"
+          ];
+          default = "beforeRnnoise";
+          description = "Place DeepFilterNet before or after RNNoise. The high-pass filter, when enabled, always remains first.";
+        };
+        attenuationLimit = lib.mkOption {
+          type = lib.types.float;
+          default = 100.0;
+          description = "DeepFilterNet attenuation limit in dB.";
+        };
+        minProcessingThreshold = lib.mkOption {
+          type = lib.types.float;
+          default = -15.0;
+          description = "DeepFilterNet minimum processing threshold in dB.";
+        };
+        maxErbProcessingThreshold = lib.mkOption {
+          type = lib.types.float;
+          default = 35.0;
+          description = "DeepFilterNet maximum ERB processing threshold in dB.";
+        };
+        maxDfProcessingThreshold = lib.mkOption {
+          type = lib.types.float;
+          default = 35.0;
+          description = "DeepFilterNet maximum deep-filter processing threshold in dB.";
+        };
+        minProcessingBuffer = lib.mkOption {
+          type = lib.types.float;
+          default = 0.0;
+          description = "DeepFilterNet minimum processing buffer in frames.";
+        };
+        postFilterBeta = lib.mkOption {
+          type = lib.types.float;
+          default = 0.0;
+          description = "DeepFilterNet post-filter beta.";
+        };
       };
     };
 
@@ -82,7 +230,10 @@ in
           };
         };
       };
-      extraLadspaPackages = [ pkgs.rnnoise-plugin.ladspa ];
+      extraLadspaPackages = [
+        pkgs.rnnoise-plugin.ladspa
+      ]
+      ++ lib.optionals cfg.rnnoise.deepfilter.enable [ pkgs.deepfilternet ];
 
       jack.enable = false;
 
@@ -109,18 +260,9 @@ in
                 "media.name" = "Noise Canceled Microphone";
                 "audio.position" = [ "MONO" ];
                 "filter.graph" = {
-                  "nodes" = [
-                    {
-                      type = "ladspa";
-                      name = "rnnoise";
-                      plugin = "librnnoise_ladspa";
-                      label = "noise_suppressor_mono";
-                      control = {
-                        "VAD Threshold (%)" = 50.0;
-                      };
-                    }
-                  ];
-                };
+                  "nodes" = rnnoiseNodes;
+                }
+                // lib.optionalAttrs (rnnoiseLinks != [ ]) { "links" = rnnoiseLinks; };
                 "capture.props" = {
                   "node.name" = "capture.rnnoise";
                   "node.passive" = true;
