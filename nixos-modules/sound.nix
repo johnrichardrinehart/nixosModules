@@ -6,18 +6,26 @@
 }:
 let
   cfg = config.dev.johnrinehart.sound;
-
-  # USB microphone identity — used to build the ALSA node name for PipeWire targeting
-  mic = {
-    manufacturer = "Samson_Technologies";
-    model = "Samson_Q9U";
-    serial = "39F22D1619113B00";
-  };
-  micNodeName = "alsa_input.usb-${mic.manufacturer}_${mic.model}_${mic.serial}-00.pro-input-0";
 in
 {
   options.dev.johnrinehart.sound = {
     enable = lib.mkEnableOption "John's sound config";
+
+    rnnoise = {
+      inputRules = lib.mkOption {
+        type = lib.types.listOf lib.types.attrs;
+        default = [ ];
+        description = ''
+          WirePlumber monitor.alsa.rules entries used to rank or otherwise
+          configure physical capture sources that can back rnnoise_source.
+
+          The sound module intentionally leaves these host-specific. For
+          example, a laptop configuration can prefer an external USB microphone
+          over the built-in microphone by raising priority.session on matching
+          Audio/Source nodes.
+        '';
+      };
+    };
 
     debug = {
       enable = lib.mkOption {
@@ -66,7 +74,14 @@ in
       alsa.enable = true;
       alsa.support32Bit = false;
       pulse.enable = true;
-      wireplumber.enable = true;
+      wireplumber = {
+        enable = true;
+        extraConfig = lib.mkIf (cfg.rnnoise.inputRules != [ ]) {
+          "51-rnnoise-capture-source-policy" = {
+            "monitor.alsa.rules" = cfg.rnnoise.inputRules;
+          };
+        };
+      };
       extraLadspaPackages = [ pkgs.rnnoise-plugin.ladspa ];
 
       jack.enable = false;
@@ -80,15 +95,19 @@ in
           };
         };
 
-        # RNNoise noise suppression — replaces NoiseTorch
-        # Targets the Samson Q9U when connected; idles silently when absent.
+        # RNNoise noise suppression — replaces NoiseTorch.
+        # Expose one stable virtual source. Its capture side autoconnects to
+        # WirePlumber's preferred physical source. Host configurations can tune
+        # that preference with dev.johnrinehart.sound.rnnoise.inputRules.
         "20-noise-suppression" = {
           "context.modules" = [
             {
               name = "libpipewire-module-filter-chain";
+              flags = [ "nofail" ];
               args = {
                 "node.description" = "Noise Canceled Microphone";
                 "media.name" = "Noise Canceled Microphone";
+                "audio.position" = [ "MONO" ];
                 "filter.graph" = {
                   "nodes" = [
                     {
@@ -105,7 +124,6 @@ in
                 "capture.props" = {
                   "node.name" = "capture.rnnoise";
                   "node.passive" = true;
-                  "target.object" = micNodeName;
                   "audio.rate" = 48000;
                 };
                 "playback.props" = {
