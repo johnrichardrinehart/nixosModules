@@ -175,6 +175,12 @@ in
       };
     };
 
+    micMonitor.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Enable a software loopback for monitoring rnnoise_source in the default headphones.";
+    };
+
     debug = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -279,8 +285,11 @@ in
           ];
         };
 
-        # Loopback for hearing your own mic through headphones (via noise suppression)
-        "30-mic-monitor" = {
+        # Loopback for hearing your own mic through headphones (via noise suppression).
+        # Keep this opt-in: USB microphones such as the Samson Q9U can provide
+        # their own zero-latency hardware monitor, and running both creates an
+        # echo/comb-filtered headphone signal.
+        "30-mic-monitor" = lib.mkIf cfg.micMonitor.enable {
           "context.modules" = [
             {
               name = "libpipewire-module-loopback";
