@@ -96,6 +96,15 @@ in
           Audio/Source nodes.
         '';
       };
+      followDefaultInput = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Enable WirePlumber default-target following so the RNNoise capture
+          stream moves when the preferred physical capture source changes, such
+          as when a USB microphone is plugged or unplugged after startup.
+        '';
+      };
       vadThreshold = lib.mkOption {
         type = lib.types.float;
         default = 50.0;
@@ -230,11 +239,20 @@ in
       pulse.enable = true;
       wireplumber = {
         enable = true;
-        extraConfig = lib.mkIf (cfg.rnnoise.inputRules != [ ]) {
-          "51-rnnoise-capture-source-policy" = {
-            "monitor.alsa.rules" = cfg.rnnoise.inputRules;
-          };
-        };
+        extraConfig = lib.mkMerge [
+          (lib.mkIf (cfg.rnnoise.inputRules != [ ]) {
+            "51-rnnoise-capture-source-policy" = {
+              "monitor.alsa.rules" = cfg.rnnoise.inputRules;
+            };
+          })
+          (lib.mkIf cfg.rnnoise.followDefaultInput {
+            "52-rnnoise-follow-default-input" = {
+              "wireplumber.settings" = {
+                "linking.follow-default-target" = true;
+              };
+            };
+          })
+        ];
       };
       extraLadspaPackages = [
         pkgs.rnnoise-plugin.ladspa
@@ -271,6 +289,7 @@ in
                 // lib.optionalAttrs (rnnoiseLinks != [ ]) { "links" = rnnoiseLinks; };
                 "capture.props" = {
                   "node.name" = "capture.rnnoise";
+                  "node.dont-reconnect" = false;
                   "node.passive" = true;
                   "audio.rate" = 48000;
                 };
