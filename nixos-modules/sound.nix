@@ -42,11 +42,29 @@ let
   };
   deepfilterBeforeRnnoise = cfg.rnnoise.deepfilter.position == "beforeRnnoise";
   deepfilterAfterRnnoise = cfg.rnnoise.deepfilter.position == "afterRnnoise";
+  rnnoiseFinalOutput =
+    if cfg.rnnoise.deepfilter.enable && deepfilterAfterRnnoise then
+      "deepfilter:Audio Out"
+    else
+      "rnnoise:Output";
+  dualMonoFanoutNodes = [
+    {
+      type = "builtin";
+      name = "stereo-left";
+      label = "copy";
+    }
+    {
+      type = "builtin";
+      name = "stereo-right";
+      label = "copy";
+    }
+  ];
   rnnoiseNodes =
     lib.optionals cfg.rnnoise.highpass.enable [ highpassNode ]
     ++ lib.optionals (cfg.rnnoise.deepfilter.enable && deepfilterBeforeRnnoise) [ deepfilterNode ]
     ++ [ rnnoiseNode ]
-    ++ lib.optionals (cfg.rnnoise.deepfilter.enable && deepfilterAfterRnnoise) [ deepfilterNode ];
+    ++ lib.optionals (cfg.rnnoise.deepfilter.enable && deepfilterAfterRnnoise) [ deepfilterNode ]
+    ++ lib.optionals cfg.rnnoise.dualMonoOutput.enable dualMonoFanoutNodes;
   rnnoiseLinks =
     lib.optionals
       (cfg.rnnoise.highpass.enable && cfg.rnnoise.deepfilter.enable && deepfilterBeforeRnnoise)
@@ -75,6 +93,16 @@ let
       {
         output = "rnnoise:Output";
         input = "deepfilter:Audio In";
+      }
+    ]
+    ++ lib.optionals cfg.rnnoise.dualMonoOutput.enable [
+      {
+        output = rnnoiseFinalOutput;
+        input = "stereo-left:In";
+      }
+      {
+        output = rnnoiseFinalOutput;
+        input = "stereo-right:In";
       }
     ];
 in
@@ -135,6 +163,17 @@ in
           type = lib.types.float;
           default = 0.707;
           description = "High-pass biquad Q value when rnnoise.highpass.enable is true.";
+        };
+      };
+      dualMonoOutput = {
+        enable = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+          description = ''
+            Fan the mono RNNoise output out to a two-channel dual-mono virtual
+            source. This is useful for applications that handle mono capture
+            poorly but adds a small amount of extra PipeWire graph work.
+          '';
         };
       };
       deepfilter = {
@@ -282,9 +321,12 @@ in
       extraConfig.pipewire = {
         "10-low-latency" = {
           "context.properties" = {
-            "default.clock.quantum" = 512;
-            "default.clock.min-quantum" = 256;
-            "default.clock.max-quantum" = 1024;
+            # 256/48000 is about 5.3 ms per processing block. This keeps the
+            # processed microphone monitor usable while leaving room to back off
+            # to 512 if DeepFilterNet or USB audio starts underrunning.
+            "default.clock.quantum" = 256;
+            "default.clock.min-quantum" = 128;
+            "default.clock.max-quantum" = 512;
           };
         };
 
@@ -300,15 +342,21 @@ in
               args = {
                 "node.description" = "Noise Canceled Microphone";
                 "media.name" = "Noise Canceled Microphone";
-                "audio.position" = [ "MONO" ];
                 "filter.graph" = {
                   "nodes" = rnnoiseNodes;
                 }
-                // lib.optionalAttrs (rnnoiseLinks != [ ]) { "links" = rnnoiseLinks; };
+                // lib.optionalAttrs (rnnoiseLinks != [ ]) { "links" = rnnoiseLinks; }
+                // lib.optionalAttrs cfg.rnnoise.dualMonoOutput.enable {
+                  "outputs" = [
+                    "stereo-left:Out"
+                    "stereo-right:Out"
+                  ];
+                };
                 "capture.props" = {
                   "node.name" = "capture.rnnoise";
                   "node.dont-reconnect" = false;
                   "node.passive" = true;
+                  "audio.position" = [ "MONO" ];
                   "audio.rate" = 48000;
                 };
                 "playback.props" = {
@@ -316,6 +364,12 @@ in
                   "node.description" = "Noise Canceled Microphone";
                   "media.class" = "Audio/Source";
                   "audio.rate" = 48000;
+                }
+                // lib.optionalAttrs cfg.rnnoise.dualMonoOutput.enable {
+                  "audio.position" = [
+                    "FL"
+                    "FR"
+                  ];
                 };
               };
             }
@@ -331,16 +385,30 @@ in
             {
               name = "libpipewire-module-loopback";
               args = {
+                # Request a short monitor path. The hardware quantum remains the
+                # floor in practice, but this prevents the loopback from adding
+                # avoidable buffering on top of the RNNoise/DeepFilter chain.
+                "node.description" = "Mic Monitor";
+                "target.delay.sec" = 0.0;
                 "capture.props" = {
                   "node.name" = "mic-monitor-capture";
                   "node.description" = "Mic Monitor";
-                  "node.passive" = true;
+                  "node.latency" = "128/48000";
                   "target.object" = "rnnoise_source";
-                  "audio.position" = [ "MONO" ];
+                  "audio.position" =
+                    if cfg.rnnoise.dualMonoOutput.enable then
+                      [
+                        "FL"
+                        "FR"
+                      ]
+                    else
+                      [ "MONO" ];
                 };
                 "playback.props" = {
                   "node.name" = "mic-monitor-playback";
                   "node.description" = "Mic Monitor";
+                  "node.latency" = "128/48000";
+                  "target.object" = "@DEFAULT_AUDIO_SINK@";
                   "audio.position" = [
                     "FL"
                     "FR"
@@ -370,7 +438,7 @@ in
         OOMScoreAdjust = -500;
         IOSchedulingClass = "best-effort";
         IOSchedulingPriority = 0;
-        Nice = -11;
+        Nice = -15;
         MemorySwapMax = "0";
         LockPersonality = true;
       }
@@ -385,7 +453,17 @@ in
       OOMScoreAdjust = -500;
       IOSchedulingClass = "best-effort";
       IOSchedulingPriority = 0;
-      Nice = -11;
+      Nice = -15;
+      MemorySwapMax = "0";
+    };
+
+    systemd.user.services.pipewire-pulse.serviceConfig = {
+      LimitMEMLOCK = "infinity";
+      LimitRTPRIO = 95;
+      OOMScoreAdjust = -500;
+      IOSchedulingClass = "best-effort";
+      IOSchedulingPriority = 0;
+      Nice = -15;
       MemorySwapMax = "0";
     };
 
