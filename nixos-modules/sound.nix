@@ -231,6 +231,24 @@ in
       }
     ];
 
+    # Persist hardware mixer controls, including USB microphone controls, and
+    # restore them from udev when devices are hotplugged.
+    #
+    # Nixpkgs notes that ALSA persistence is generally unnecessary when using
+    # an external sound server. That advice applies to normal desktop routing,
+    # stream volumes, and default devices, which WirePlumber owns here. We still
+    # enable only the persistence hook because USB devices can expose hardware
+    # mixer controls outside WirePlumber's durable policy model. The Samson Q9U
+    # is one such device: its Mic Gain, HP Volume, and Direct monitoring controls
+    # are ALSA device controls that can reset across unplug/replug unless
+    # alsactl restores the card state on hotplug.
+    hardware.alsa.enablePersistence = true;
+
+    # PipeWire's PulseAudio compatibility daemon intentionally does not put the
+    # PulseAudio client tools on PATH. Keep pactl/pacat available whenever this
+    # module enables services.pipewire.pulse.
+    environment.systemPackages = lib.mkIf config.services.pipewire.pulse.enable [ pkgs.pulseaudio ];
+
     services.pipewire = {
       enable = true;
 
