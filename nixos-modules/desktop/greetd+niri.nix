@@ -39,12 +39,12 @@ let
     inherit clipboard-store-notify;
   };
 
-  # Wallpaper, served by swww (awww). Unlike hyprpaper, swww's daemon watches
+  # Wallpaper, served by awww. Unlike hyprpaper, awww's daemon watches
   # for output changes and re-applies the image to monitors that appear after
   # it started (hotplug / wake), which hyprpaper cannot do outside Hyprland
   # because its IPC is disabled under niri.
   #
-  # The source image is huge (7952x5304); swww decodes it into per-output
+  # The source image is huge (7952x5304); awww decodes it into per-output
   # buffer pools, so we pre-scale it down to 4K to keep the daemon's resident
   # memory modest instead of ~170MB.
   wallpaper = pkgs.runCommand "wallpaper-scaled.jpg" { nativeBuildInputs = [ pkgs.imagemagick ]; } ''
@@ -54,12 +54,10 @@ let
 
   # niri tracks the foreground process, so we exec the daemon and set the image
   # from a backgrounded subshell that waits for the daemon's socket first (the
-  # `swww img` client call otherwise races daemon startup).
-  # NB: pkgs.swww is an alias for awww (upstream renamed the project); the
-  # binaries are `awww` / `awww-daemon`, not `swww` / `swww-daemon`.
-  swww-wallpaper = pkgs.writeShellScript "swww-wallpaper" ''
+  # `awww img` client call otherwise races daemon startup).
+  awww-wallpaper = pkgs.writeShellScript "awww-wallpaper" ''
     set -eu
-    awww="${lib.getExe' pkgs.swww "awww"}"
+    awww="${lib.getExe' pkgs.awww "awww"}"
     (
       for _ in $(seq 1 50); do
         "$awww" query >/dev/null 2>&1 && break
@@ -67,7 +65,7 @@ let
       done
       exec "$awww" img --resize crop ${wallpaper}
     ) &
-    exec ${lib.getExe' pkgs.swww "awww-daemon"}
+    exec ${lib.getExe' pkgs.awww "awww-daemon"}
   '';
 
   # Shared PAM configuration for fingerprint + password authentication
@@ -155,7 +153,10 @@ in
 
     programs.niri.enable = true;
 
-    programs.niri.package = pkgs.dev.johnrinehart.niri;
+    # Use nixpkgs' packaged niri. This avoids maintaining a local duplicate
+    # package and uses nixpkgs' vendored cargoHash instead of builtin git
+    # fetching for Smithay dependencies.
+    programs.niri.package = pkgs.niri;
 
     users.users.${primaryUser}.extraGroups = [ "seat" ];
 
@@ -207,7 +208,7 @@ in
         pkgs.cliphist
         pkgs.dev.johnrinehart.fuzzel_1_14_1
         pkgs.grim
-        pkgs.swww
+        pkgs.awww
         pkgs.satty
         pkgs.slurp
         pkgs.waybar
@@ -232,7 +233,7 @@ in
           replacements = {
             fuzzel_dmenu = lib.getExe fuzzelDmenu;
             clipboard_watch = lib.getExe clipboard-watch;
-            swww_wallpaper = "${swww-wallpaper}";
+            swww_wallpaper = "${awww-wallpaper}";
             input_toggle_notify = lib.getExe input-toggle-notify;
             keyboard_brightness_notify = lib.getExe keyboard-brightness-notify;
             lock_command = "${lib.getExe' pkgs.systemd "loginctl"} lock-session";

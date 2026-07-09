@@ -42,7 +42,7 @@ inputs: {
         };
         fuzzel-dmenu = {
           fuzzel = johnPkgs.fuzzel_1_14_1;
-          inherit (johnPkgs) niri;
+          inherit (final) niri;
         };
         fuzzel_1_14_1.fuzzel = prev.fuzzel;
         kdlfmt.kdlfmt = kdlfmt_0_1_7;
@@ -63,11 +63,11 @@ inputs: {
         };
         niri-cycle-display-mode = {
           fuzzel = johnPkgs.fuzzel_1_14_1;
-          inherit (johnPkgs) niri;
+          inherit (final) niri;
         };
-        niri-gather-windows.niri = johnPkgs.niri;
+        niri-gather-windows.niri = final.niri;
         niri-screenshot = {
-          inherit (johnPkgs) niri;
+          inherit (final) niri;
           inherit (johnPkgs) wormhole-send;
         };
         omx-agent-tools = {
