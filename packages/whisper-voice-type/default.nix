@@ -131,6 +131,8 @@ stdenv.mkDerivation {
 
   buildPhase = ''
     shellcheck ${./whisper-voice-type.sh}
+    XDG_DATA_HOME="$TMPDIR/data" PYTHONPATH=${./.} \
+      ${python}/bin/python -m unittest discover -s ${./tests}
   '';
 
   installPhase = ''

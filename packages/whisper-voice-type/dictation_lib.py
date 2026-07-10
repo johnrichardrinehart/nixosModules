@@ -147,6 +147,35 @@ def apply_vocabulary(text, vocabulary):
     return " ".join(words)
 
 
+def command_phrase_matches(text, phrase):
+    """Match a command phrase while tolerating common recognition errors."""
+    text_words = re.findall(r"[^\W_]+", text.lower())
+    phrase_words = re.findall(r"[^\W_]+", phrase.lower())
+    if not phrase_words or len(text_words) < len(phrase_words):
+        return False
+
+    def word_matches(actual, expected):
+        if actual == expected:
+            return True
+        suffix = actual[len(expected) :] if actual.startswith(expected) else None
+        if expected in {"start", "stop"} and suffix in {"s", "ped", "ping"}:
+            return True
+        if len(expected) < 6:
+            return False
+        return difflib.SequenceMatcher(None, actual, expected).ratio() >= 0.85
+
+    width = len(phrase_words)
+    return any(
+        all(
+            word_matches(actual, expected)
+            for actual, expected in zip(window, phrase_words)
+        )
+        for window in (
+            text_words[i : i + width] for i in range(len(text_words) - width + 1)
+        )
+    )
+
+
 def apply_corrections(text, corrections):
     if not corrections:
         return text

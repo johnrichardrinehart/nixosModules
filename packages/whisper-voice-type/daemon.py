@@ -164,10 +164,6 @@ class StatusNotifierItem(ServiceInterface):
     def ItemIsMenu(self) -> "b":
         return False
 
-    @dbus_property(access=PropertyAccess.READ)
-    def Menu(self) -> "o":
-        return "/NO_DBUSMENU"
-
     @dbus_signal()
     def NewIcon(self):
         pass
@@ -193,6 +189,8 @@ async def _do_register(bus):
             ),
         )
         iface = watcher.get_interface("org.kde.StatusNotifierWatcher")
+        while not await iface.get_is_status_notifier_host_registered():
+            await asyncio.sleep(0.1)
         await iface.call_register_status_notifier_item(_SNI_NAME)
     except Exception:
         pass
@@ -502,7 +500,6 @@ def _phrase_re(phrase):
 
 
 _START_RE = _phrase_re(START_PHRASE)
-_STOP_RE = _phrase_re(STOP_PHRASE)
 _leader_recent_until = 0.0
 _leader_last_seen = 0.0
 _leader_available = LEADER_KEY is None
@@ -649,7 +646,7 @@ def _check_trigger(text):
             _tray_set("dictating")
             notify_msg("Dictating…", _dev_name or "", timeout=0, urgency="low")
         return True
-    if _STOP_RE.search(text):
+    if dlib.command_phrase_matches(text, STOP_PHRASE):
         if _dictating:
             _dictating = False
             _tray_set("listening")
@@ -695,7 +692,7 @@ class Listener(TranscriptEventListener):
         with _wtype_lock:
             raw_text = event.line.text
             if _check_trigger(raw_text):
-                _prev = ""
+                _render("")
                 return
             _type_diff(raw_text)
 
@@ -704,7 +701,7 @@ class Listener(TranscriptEventListener):
         with _wtype_lock:
             raw_text = event.line.text
             if _check_trigger(raw_text):
-                _prev = ""
+                _render("")
                 return
             if _check_correction_command(raw_text):
                 _prev = ""
