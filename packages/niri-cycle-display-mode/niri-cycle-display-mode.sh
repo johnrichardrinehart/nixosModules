@@ -143,17 +143,40 @@ restore_mirror_positions() {
     output="$(jq -r '.output' <<<"$decoded")"
     x="$(jq -r '.x' <<<"$decoded")"
     y="$(jq -r '.y' <<<"$decoded")"
-    niri msg output "$output" position set "$x" "$y" || true
+    niri msg output "$output" position set -- "$x" "$y" || true
   done < <(jq -r '.[] | @base64' "$mirror_positions_file")
 
   rm -f "$mirror_positions_file"
 }
 
+mirror_processes_alive() {
+  local pid
+
+  [ -f "$mirror_pid_file" ] || return 1
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    kill -0 "$pid" 2>/dev/null && return 0
+  done <"$mirror_pid_file"
+  return 1
+}
+
 stop_mirror() {
+  local deadline pid
+
   if [ -f "$mirror_pid_file" ]; then
     while IFS= read -r pid; do
       [ -n "$pid" ] || continue
       kill "$pid" 2>/dev/null || true
+    done <"$mirror_pid_file"
+
+    deadline=$((SECONDS + 2))
+    while [ "$SECONDS" -lt "$deadline" ] && mirror_processes_alive; do
+      sleep 0.05
+    done
+
+    while IFS= read -r pid; do
+      [ -n "$pid" ] || continue
+      kill -KILL "$pid" 2>/dev/null || true
     done <"$mirror_pid_file"
   fi
 
@@ -277,6 +300,58 @@ apply_extend() {
   notify_display "Displays extended" "${#outputs[@]} outputs active"
 }
 
+mirror_process_is_on_output() {
+  local pid="$1"
+  local target_output="$2"
+  local workspace_id
+
+  workspace_id="$(
+    niri msg --json windows 2>/dev/null |
+      jq -r --argjson pid "$pid" '.[] | select(.pid == $pid) | .workspace_id' |
+      head -n 1
+  )"
+  [ -n "$workspace_id" ] || return 1
+
+  niri msg --json workspaces 2>/dev/null |
+    jq -e --argjson workspace_id "$workspace_id" --arg output "$target_output" \
+      'any(.[]; .id == $workspace_id and .output == $output)' >/dev/null
+}
+
+start_mirror_target() {
+  local source_output="$1"
+  local target_output="$2"
+  local log_file pid ready
+
+  log_file="$state_dir/wl-mirror-${target_output}.log"
+  for _ in 1 2 3; do
+    : >"$log_file"
+    nohup wl-mirror --fullscreen-output "$target_output" "$source_output" \
+      >"$log_file" 2>&1 &
+    pid="$!"
+    ready=false
+    for _ in $(seq 1 40); do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      if mirror_process_is_on_output "$pid" "$target_output"; then
+        ready=true
+        break
+      fi
+      sleep 0.05
+    done
+    if [ "$ready" = true ]; then
+      printf '%s\n' "$pid" >>"$mirror_pid_file"
+      return 0
+    fi
+    kill "$pid" 2>/dev/null || true
+    sleep 0.1
+  done
+
+  notify_display "Display mirror failed" \
+    "Could not attach mirror to $target_output; see $log_file"
+  return 1
+}
+
 apply_mirror() {
   source_output="$1"
   stop_mirror
@@ -296,15 +371,19 @@ apply_mirror() {
   : >"$mirror_pid_file"
   printf '%s\n' "$source_output" >"$mirror_source_file"
 
+  mirror_failures=0
   for output in "${outputs[@]}"; do
     if [ "$output" != "$source_output" ]; then
-      nohup wl-mirror --fullscreen-output "$output" "$source_output" >/dev/null 2>&1 &
-      printf '%s\n' "$!" >>"$mirror_pid_file"
+      start_mirror_target "$source_output" "$output" || mirror_failures=$((mirror_failures + 1))
     fi
   done
 
   niri msg action focus-monitor "$source_output" || true
-  notify_display "Displays mirrored" "Source: $source_output"
+  if [ "$mirror_failures" -eq 0 ]; then
+    notify_display "Displays mirrored" "Source: $source_output"
+  else
+    notify_display "Display mirror incomplete" "$mirror_failures target(s) failed"
+  fi
 }
 
 apply_single_outputs() {
@@ -586,6 +665,15 @@ single-isolated)
   load_outputs || exit 0
   apply_single_isolated "$target"
   ;;
+mirror)
+  source_output="${2:-}"
+  load_outputs || exit 0
+  if [ -z "$source_output" ] || ! output_is_active "$source_output"; then
+    source_output="$(focused_output || true)"
+  fi
+  [ -n "$source_output" ] || source_output="${active_outputs[0]:-$(first_single_target)}"
+  apply_mirror "$source_output"
+  ;;
 single-migrate)
   target="${2:-}"
   [ -n "$target" ] || {
@@ -597,7 +685,7 @@ single-migrate)
   ;;
 cycle) cycle_display_mode ;;
 *)
-  echo "Usage: niri-cycle-display-mode [pick|status|--watch|cycle|single-isolated <output>|single-migrate <output>]" >&2
+  echo "Usage: niri-cycle-display-mode [pick|status|--watch|cycle|mirror [source-output]|single-isolated <output>|single-migrate <output>]" >&2
   exit 2
   ;;
 esac
