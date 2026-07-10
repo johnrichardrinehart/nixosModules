@@ -22,12 +22,12 @@ let
 
   niriPatches = [
     ./0000-version-report-downstream-patches.patch
-    ./0001-overview-allow-showing-only-active-workspace.patch
+    ./0001-overview-allow-targeting-active-output.patch
   ];
   niriPatchVersionSuffix = lib.concatMapStrings (
     patch: "\n+ ${builtins.baseNameOf (toString patch)}"
   ) niriPatches;
-  niriWithActiveWorkspaceOverview = pkgs.niri.overrideAttrs (old: {
+  niriWithScopedOverview = pkgs.niri.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ niriPatches;
     env = (old.env or { }) // {
       NIRI_BUILD_PATCHES = niriPatchVersionSuffix;
@@ -172,7 +172,7 @@ in
 
     # Keep nixpkgs' niri derivation and vendored dependencies, adding only the
     # active-workspace overview configuration patch.
-    programs.niri.package = niriWithActiveWorkspaceOverview;
+    programs.niri.package = niriWithScopedOverview;
 
     users.users.${primaryUser}.extraGroups = [ "seat" ];
 
