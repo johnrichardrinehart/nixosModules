@@ -85,14 +85,17 @@ let
     exec ${lib.getExe' pkgs.awww "awww-daemon"}
   '';
 
-  # Shared PAM configuration for fingerprint + password authentication
+  # Shared PAM configuration for password authentication with an optional
+  # fingerprint factor.
   fprintPamConfig = ''
     # Account management
     account required pam_unix.so
 
     # Authentication management
-    # Fingerprint: success→continue, timeout/unavailable→continue, wrong→reject immediately
-    auth [success=ok ignore=ignore authinfo_unavail=ignore default=die] ${pkgs.fprintd}/lib/security/pam_fprintd.so timeout=5
+    ${lib.optionalString cfg.fingerprint.enable ''
+      # Fingerprint: success→continue, timeout/unavailable→continue, wrong→reject immediately
+      auth [success=ok ignore=ignore authinfo_unavail=ignore default=die] ${pkgs.fprintd}/lib/security/pam_fprintd.so timeout=${toString cfg.fingerprint.timeoutSeconds}
+    ''}
     # Password is always required (do NOT use try_first_pass - we need fresh password for keyring)
     auth required pam_unix.so nullok
     auth optional ${pkgs.gnome-keyring}/lib/security/pam_gnome_keyring.so
@@ -116,6 +119,14 @@ in
       enable = lib.mkEnableOption "greetd + niri";
       hypridle.enable = lib.mkEnableOption "hypridle integration" // {
         default = true;
+      };
+      fingerprint = {
+        enable = lib.mkEnableOption "fingerprint authentication";
+        timeoutSeconds = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 15;
+          description = "Seconds to wait for fingerprint authentication before timing out.";
+        };
       };
       niri = {
         extraConfig = lib.mkOption {
@@ -177,6 +188,7 @@ in
     users.users.${primaryUser}.extraGroups = [ "seat" ];
 
     services.greetd.enable = true;
+    services.fprintd.enable = lib.mkIf cfg.fingerprint.enable true;
     # Raise the fd soft limit so children (waybar, etc.) don't hit the
     # default 1024 and fail with "Too many open files" on boot.
     systemd.services.greetd.serviceConfig.LimitNOFILE = "524288";
