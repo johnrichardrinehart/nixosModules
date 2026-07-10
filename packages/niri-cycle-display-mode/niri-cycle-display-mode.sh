@@ -6,6 +6,7 @@ command="${1:-cycle}"
 state_dir="${XDG_RUNTIME_DIR:-/tmp}/johnos-niri-display-mode"
 mirror_pid_file="$state_dir/wl-mirror.pids"
 mirror_source_file="$state_dir/wl-mirror.source"
+mirror_positions_file="$state_dir/wl-mirror.positions.json"
 f9_picker_pid_file="$state_dir/f9-picker.pid"
 single_migrate_state_file="$state_dir/single-migrate-state.json"
 mirror_target_position_base=100000
@@ -110,14 +111,53 @@ mirror_is_active() {
   return 1
 }
 
+save_mirror_positions() {
+  local tmp_positions
+
+  mkdir -p "$state_dir"
+  tmp_positions="$(mktemp "$state_dir/wl-mirror.positions.XXXXXX")"
+  if niri msg --json outputs 2>/dev/null |
+    jq '[
+      to_entries[]
+      | select(.value.logical != null)
+      | {
+          output: (.value.name // .key),
+          x: .value.logical.x,
+          y: .value.logical.y
+        }
+    ]' >"$tmp_positions"; then
+    mv "$tmp_positions" "$mirror_positions_file"
+  else
+    rm -f "$tmp_positions"
+    return 1
+  fi
+}
+
+restore_mirror_positions() {
+  local decoded output x y
+
+  [ -f "$mirror_positions_file" ] || return 0
+
+  while IFS= read -r entry; do
+    decoded="$(printf '%s' "$entry" | base64 -d)"
+    output="$(jq -r '.output' <<<"$decoded")"
+    x="$(jq -r '.x' <<<"$decoded")"
+    y="$(jq -r '.y' <<<"$decoded")"
+    niri msg output "$output" position set "$x" "$y" || true
+  done < <(jq -r '.[] | @base64' "$mirror_positions_file")
+
+  rm -f "$mirror_positions_file"
+}
+
 stop_mirror() {
-  [ -f "$mirror_pid_file" ] || return 0
+  if [ -f "$mirror_pid_file" ]; then
+    while IFS= read -r pid; do
+      [ -n "$pid" ] || continue
+      kill "$pid" 2>/dev/null || true
+    done <"$mirror_pid_file"
+  fi
 
-  while IFS= read -r pid; do
-    [ -n "$pid" ] || continue
-    kill "$pid" 2>/dev/null || true
-  done <"$mirror_pid_file"
-
+  restore_mirror_positions
   rm -f "$mirror_pid_file" "$mirror_source_file"
 }
 
@@ -251,8 +291,8 @@ apply_mirror() {
   sleep 0.2
   niri msg action load-config-file || true
   sleep 0.2
+  save_mirror_positions
   isolate_mirror_targets "$source_output"
-  mkdir -p "$state_dir"
   : >"$mirror_pid_file"
   printf '%s\n' "$source_output" >"$mirror_source_file"
 

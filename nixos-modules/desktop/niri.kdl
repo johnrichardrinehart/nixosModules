@@ -387,10 +387,10 @@ binds {
         spawn "@keyboard_brightness_notify@" "down"
     }
     XF86Display allow-when-locked=true allow-inhibiting=false {
-        spawn "@niri_cycle_display_mode@"
+        spawn "@niri_cycle_display_mode@" "pick"
     }
     Shift+XF86Display allow-when-locked=true allow-inhibiting=false {
-        spawn "@niri_cycle_display_mode@" "pick"
+        spawn "@display_layout_editor@"
     }
     // Open/close the Overview: a zoomed-out view of workspaces and windows.
     // You can also move the mouse into the top-left hot corner,

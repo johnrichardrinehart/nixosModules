@@ -19,6 +19,7 @@ let
     );
 
   wormhole-send = pkgs.dev.johnrinehart.wormhole-send;
+  display-layout = pkgs.dev.johnrinehart.display-layout;
 
   niriPatches = [
     ./0000-version-report-downstream-patches.patch
@@ -220,6 +221,7 @@ in
         };
       in
       [
+        display-layout
         niri-gather-windows
         niri-cycle-display-mode
         niri-screenshot
@@ -269,6 +271,7 @@ in
             suspend = "${lib.getExe' pkgs.systemd "systemctl"} suspend-then-hibernate";
             wl-kbptr = lib.getExe pkgs.wl-kbptr;
             brightness_notify = lib.getExe brightness-notify;
+            display_layout_editor = lib.getExe display-layout;
             niri_cycle_display_mode = lib.getExe niri-cycle-display-mode;
             niri_screenshot = lib.getExe niri-screenshot;
             volume_notify = lib.getExe volume-notify;

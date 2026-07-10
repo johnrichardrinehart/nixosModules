@@ -35,6 +35,10 @@ inputs: {
         };
         codex-omx-layer.oh-my-codex = johnPkgs.oh-my-codex;
         confirm-ssh-activity-before-suspend.promptTimeoutSeconds = 15 * 60;
+        display-layout = {
+          inherit (inputs) display-layout;
+          system = final.stdenv.hostPlatform.system;
+        };
         droidcam-v4l2loopback.kernel = final.linuxPackages_latest.kernel;
         framework-ec-flash = {
           inherit (johnPkgs) framework-ec;
