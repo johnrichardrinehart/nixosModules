@@ -20,6 +20,20 @@ let
 
   wormhole-send = pkgs.dev.johnrinehart.wormhole-send;
 
+  niriPatches = [
+    ./0000-version-report-downstream-patches.patch
+    ./0001-overview-allow-showing-only-active-workspace.patch
+  ];
+  niriPatchVersionSuffix = lib.concatMapStrings (
+    patch: "\n+ ${builtins.baseNameOf (toString patch)}"
+  ) niriPatches;
+  niriWithActiveWorkspaceOverview = pkgs.niri.overrideAttrs (old: {
+    patches = (old.patches or [ ]) ++ niriPatches;
+    env = (old.env or { }) // {
+      NIRI_BUILD_PATCHES = niriPatchVersionSuffix;
+    };
+  });
+
   niri-screenshot = pkgs.dev.johnrinehart.niri-screenshot.override {
     niri = config.programs.niri.package;
     inherit wormhole-send;
@@ -153,10 +167,9 @@ in
 
     programs.niri.enable = true;
 
-    # Use nixpkgs' packaged niri. This avoids maintaining a local duplicate
-    # package and uses nixpkgs' vendored cargoHash instead of builtin git
-    # fetching for Smithay dependencies.
-    programs.niri.package = pkgs.niri;
+    # Keep nixpkgs' niri derivation and vendored dependencies, adding only the
+    # active-workspace overview configuration patch.
+    programs.niri.package = niriWithActiveWorkspaceOverview;
 
     users.users.${primaryUser}.extraGroups = [ "seat" ];
 

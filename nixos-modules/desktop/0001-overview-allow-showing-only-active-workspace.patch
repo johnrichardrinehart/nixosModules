@@ -1,0 +1,220 @@
+diff --git a/docs/wiki/Configuration:-Miscellaneous.md b/docs/wiki/Configuration:-Miscellaneous.md
+index 7a2f42dd..05677ea7 100644
+--- a/docs/wiki/Configuration:-Miscellaneous.md
++++ b/docs/wiki/Configuration:-Miscellaneous.md
+@@ -214,6 +214,20 @@ overview {
+ }
+ ```
+ 
++#### `all-workspaces`
++
++<sup>Since: next release</sup>
++
++By default, the overview shows the active workspace together with the other
++workspaces above and below it. Set `all-workspaces=false` to show only the
++active workspace. Other workspaces remain unchanged and are not rendered in
++the overview.
++
++```kdl
++overview all-workspaces=false {
++}
++```
++
+ #### `backdrop-color`
+ 
+ Set the backdrop color behind workspaces in the overview.
+diff --git a/docs/wiki/Overview.md b/docs/wiki/Overview.md
+index f9bb94a3..a8d2430e 100644
+--- a/docs/wiki/Overview.md
++++ b/docs/wiki/Overview.md
+@@ -54,6 +54,13 @@ overview {
+ }
+ ```
+ 
++To show only the active workspace rather than the full workspace stack:
++
++```kdl
++overview all-workspaces=false {
++}
++```
++
+ To change the color behind the workspaces, use the `backdrop-color` setting:
+ 
+ ```kdl
+diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
+index 77f07967..0adb2761 100644
+--- a/niri-config/src/lib.rs
++++ b/niri-config/src/lib.rs
+@@ -648,6 +648,16 @@ mod tests {
+         assert_eq!(config.input.keyboard.repeat_rate, 25);
+     }
+ 
++    #[test]
++    fn overview_all_workspaces() {
++        let config = Config::parse_mem("").unwrap();
++        assert!(config.overview.all_workspaces);
++
++        let config = Config::parse_mem("overview all-workspaces=false { zoom 0.25; }").unwrap();
++        assert!(!config.overview.all_workspaces);
++        assert_eq!(config.overview.zoom, 0.25);
++    }
++
+     #[track_caller]
+     fn do_parse(text: &str) -> Config {
+         Config::parse_mem(text)
+@@ -1674,6 +1684,7 @@ mod tests {
+             },
+             overview: Overview {
+                 zoom: 0.5,
++                all_workspaces: true,
+                 backdrop_color: Color {
+                     r: 0.15,
+                     g: 0.15,
+diff --git a/niri-config/src/misc.rs b/niri-config/src/misc.rs
+index 66a200ca..9a4ec1a2 100644
+--- a/niri-config/src/misc.rs
++++ b/niri-config/src/misc.rs
+@@ -121,6 +121,7 @@ impl MergeWith<ClipboardPart> for Clipboard {
+ #[derive(Debug, Clone, Copy, PartialEq)]
+ pub struct Overview {
+     pub zoom: f64,
++    pub all_workspaces: bool,
+     pub backdrop_color: Color,
+     pub workspace_shadow: WorkspaceShadow,
+ }
+@@ -129,6 +130,7 @@ impl Default for Overview {
+     fn default() -> Self {
+         Self {
+             zoom: 0.5,
++            all_workspaces: true,
+             backdrop_color: DEFAULT_BACKDROP_COLOR,
+             workspace_shadow: WorkspaceShadow::default(),
+         }
+@@ -139,6 +141,8 @@ impl Default for Overview {
+ pub struct OverviewPart {
+     #[knuffel(child, unwrap(argument))]
+     pub zoom: Option<FloatOrInt<0, 1>>,
++    #[knuffel(property(name = "all-workspaces"))]
++    pub all_workspaces: Option<bool>,
+     #[knuffel(child)]
+     pub backdrop_color: Option<Color>,
+     #[knuffel(child)]
+@@ -148,7 +152,7 @@ pub struct OverviewPart {
+ impl MergeWith<OverviewPart> for Overview {
+     fn merge_with(&mut self, part: &OverviewPart) {
+         merge!((self, part), zoom, workspace_shadow);
+-        merge_clone!((self, part), backdrop_color);
++        merge_clone!((self, part), all_workspaces, backdrop_color);
+     }
+ }
+ 
+diff --git a/src/layout/monitor.rs b/src/layout/monitor.rs
+index d71ca55a..b615c2c4 100644
+--- a/src/layout/monitor.rs
++++ b/src/layout/monitor.rs
+@@ -1506,22 +1506,33 @@ impl<W: LayoutElement> Monitor<W> {
+         &self,
+     ) -> impl Iterator<Item = (&Workspace<W>, Rectangle<f64, Logical>)> {
+         let output_geo = Rectangle::from_size(self.view_size);
++        let active_only = self.overview_progress.is_some() && !self.options.overview.all_workspaces;
++        let active_idx = self.active_workspace_idx;
+ 
+         let geo = self.workspaces_render_geo();
+-        zip(self.workspaces.iter(), geo)
+-            // Cull out workspaces outside the output.
+-            .filter(move |(_ws, geo)| geo.intersection(output_geo).is_some())
++        zip(self.workspaces.iter().enumerate(), geo)
++            // Cull out workspaces outside the output and, when configured, all
++            // workspaces other than the active one in the overview.
++            .filter(move |((idx, _ws), geo)| {
++                (!active_only || *idx == active_idx) && geo.intersection(output_geo).is_some()
++            })
++            .map(|((_idx, ws), geo)| (ws, geo))
+     }
+ 
+     pub fn workspaces_with_render_geo_idx(
+         &self,
+     ) -> impl Iterator<Item = ((usize, &Workspace<W>), Rectangle<f64, Logical>)> {
+         let output_geo = Rectangle::from_size(self.view_size);
++        let active_only = self.overview_progress.is_some() && !self.options.overview.all_workspaces;
++        let active_idx = self.active_workspace_idx;
+ 
+         let geo = self.workspaces_render_geo();
+         zip(self.workspaces.iter().enumerate(), geo)
+-            // Cull out workspaces outside the output.
+-            .filter(move |(_ws, geo)| geo.intersection(output_geo).is_some())
++            // Cull out workspaces outside the output and, when configured, all
++            // workspaces other than the active one in the overview.
++            .filter(move |((idx, _ws), geo)| {
++                (!active_only || *idx == active_idx) && geo.intersection(output_geo).is_some()
++            })
+     }
+ 
+     pub fn workspaces_with_render_geo_mut(
+@@ -1529,11 +1540,19 @@ impl<W: LayoutElement> Monitor<W> {
+         cull: bool,
+     ) -> impl Iterator<Item = (&mut Workspace<W>, Rectangle<f64, Logical>)> {
+         let output_geo = Rectangle::from_size(self.view_size);
++        let active_only = self.overview_progress.is_some() && !self.options.overview.all_workspaces;
++        let active_idx = self.active_workspace_idx;
+ 
+         let geo = self.workspaces_render_geo();
+-        zip(self.workspaces.iter_mut(), geo)
+-            // Cull out workspaces outside the output.
+-            .filter(move |(_ws, geo)| !cull || geo.intersection(output_geo).is_some())
++        zip(self.workspaces.iter_mut().enumerate(), geo)
++            // When culling for rendering, also cull non-active workspaces from
++            // a single-workspace overview. Keep all workspaces for callers
++            // which explicitly disable culling.
++            .filter(move |((idx, _ws), geo)| {
++                (!active_only || !cull || *idx == active_idx)
++                    && (!cull || geo.intersection(output_geo).is_some())
++            })
++            .map(|((_idx, ws), geo)| (ws, geo))
+     }
+ 
+     pub fn workspace_under(
+diff --git a/src/layout/tests.rs b/src/layout/tests.rs
+index 31265dd9..aac575e0 100644
+--- a/src/layout/tests.rs
++++ b/src/layout/tests.rs
+@@ -3697,6 +3697,39 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
+     check_ops(ops);
+ }
+ 
++#[test]
++fn overview_can_render_only_active_workspace() {
++    let ops = [
++        Op::AddOutput(1),
++        Op::AddWindow {
++            params: TestWindowParams::new(1),
++        },
++        Op::FocusWorkspaceDown,
++        Op::AddWindow {
++            params: TestWindowParams::new(2),
++        },
++        Op::ToggleOverview,
++        Op::CompleteAnimations,
++    ];
++
++    let default_layout = check_ops(ops.clone());
++    let MonitorSet::Normal { monitors, .. } = &default_layout.monitor_set else {
++        unreachable!()
++    };
++    assert!(monitors[0].workspaces_with_render_geo().count() > 1);
++
++    let mut options = Options::default();
++    options.overview.all_workspaces = false;
++    let active_only_layout = check_ops_with_options(options, ops);
++    let MonitorSet::Normal { monitors, .. } = &active_only_layout.monitor_set else {
++        unreachable!()
++    };
++    let mon = &monitors[0];
++    let visible = mon.workspaces_with_render_geo().collect::<Vec<_>>();
++    assert_eq!(visible.len(), 1);
++    assert_eq!(visible[0].0.id(), mon.active_workspace_ref().id());
++}
++
+ #[test]
+ fn workspace_render_geo_at_fractional_scale() {
+     let ops = [
