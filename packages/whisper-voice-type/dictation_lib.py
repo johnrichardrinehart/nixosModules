@@ -147,12 +147,12 @@ def apply_vocabulary(text, vocabulary):
     return " ".join(words)
 
 
-def command_phrase_matches(text, phrase):
-    """Match a command phrase while tolerating common recognition errors."""
-    text_words = re.findall(r"[^\W_]+", text.lower())
+def command_phrase_span(text, phrase):
+    """Locate a command phrase while tolerating common recognition errors."""
+    text_words = list(re.finditer(r"[^\W_]+", text.lower()))
     phrase_words = re.findall(r"[^\W_]+", phrase.lower())
     if not phrase_words or len(text_words) < len(phrase_words):
-        return False
+        return None
 
     def word_matches(actual, expected):
         if actual == expected:
@@ -165,15 +165,18 @@ def command_phrase_matches(text, phrase):
         return difflib.SequenceMatcher(None, actual, expected).ratio() >= 0.85
 
     width = len(phrase_words)
-    return any(
-        all(
-            word_matches(actual, expected)
+    for i in range(len(text_words) - width + 1):
+        window = text_words[i : i + width]
+        if all(
+            word_matches(actual.group(), expected)
             for actual, expected in zip(window, phrase_words)
-        )
-        for window in (
-            text_words[i : i + width] for i in range(len(text_words) - width + 1)
-        )
-    )
+        ):
+            return window[0].start(), window[-1].end()
+    return None
+
+
+def command_phrase_matches(text, phrase):
+    return command_phrase_span(text, phrase) is not None
 
 
 def apply_corrections(text, corrections):

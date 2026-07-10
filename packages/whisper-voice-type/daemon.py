@@ -640,19 +640,21 @@ def _check_trigger(text):
     if _START_RE.search(text):
         if not _leader_allows_start():
             _notify_start_rejected()
-            return True
+            return ""
         if not _dictating:
             _dictating = True
             _tray_set("dictating")
             notify_msg("Dictating…", _dev_name or "", timeout=0, urgency="low")
-        return True
-    if dlib.command_phrase_matches(text, STOP_PHRASE):
-        if _dictating:
-            _dictating = False
-            _tray_set("listening")
-            notify_close()
-        return True
-    return False
+        return ""
+
+    stop_span = dlib.command_phrase_span(text, STOP_PHRASE)
+    if stop_span is not None and _dictating:
+        retained_text = _transcribe(text[: stop_span[0]].rstrip())
+        _dictating = False
+        _tray_set("listening")
+        notify_close()
+        return retained_text
+    return None
 
 
 def _render(target):
@@ -691,8 +693,9 @@ class Listener(TranscriptEventListener):
         global _prev
         with _wtype_lock:
             raw_text = event.line.text
-            if _check_trigger(raw_text):
-                _render("")
+            trigger_target = _check_trigger(raw_text)
+            if trigger_target is not None:
+                _render(trigger_target)
                 return
             _type_diff(raw_text)
 
@@ -700,8 +703,9 @@ class Listener(TranscriptEventListener):
         global _prev
         with _wtype_lock:
             raw_text = event.line.text
-            if _check_trigger(raw_text):
-                _render("")
+            trigger_target = _check_trigger(raw_text)
+            if trigger_target is not None:
+                _render(trigger_target)
                 return
             if _check_correction_command(raw_text):
                 _prev = ""

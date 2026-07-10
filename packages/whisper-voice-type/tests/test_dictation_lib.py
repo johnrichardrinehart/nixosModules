@@ -17,6 +17,14 @@ class CommandPhraseMatchesTest(unittest.TestCase):
             dlib.command_phrase_matches("Stopped dicatation", "stop dictation")
         )
 
+    def test_returns_command_span_without_preceding_dictation(self):
+        text = "Okay, we're going to see how this works. Stop dictation."
+        start, end = dlib.command_phrase_span(text, "stop dictation")
+        self.assertEqual(text[start:end], "Stop dictation")
+        self.assertEqual(
+            text[:start].rstrip(), "Okay, we're going to see how this works."
+        )
+
     def test_rejects_partial_phrase(self):
         self.assertFalse(dlib.command_phrase_matches("Stop", "stop dictation"))
 
