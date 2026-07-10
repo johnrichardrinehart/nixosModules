@@ -38,6 +38,8 @@
     ./bluetooth.nix
     ./hibernate-resume-optimization.nix
     ./droidcam.nix
+    ./external-display-recovery.nix
+    ./external-display-telemetry.nix
     ./filepicker.nix
     ./firmware/framework-ec.nix
     ./fonts.nix
