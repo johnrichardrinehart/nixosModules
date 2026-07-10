@@ -201,7 +201,7 @@ index 50567530..e2169c8f 100644
          Keysym::Left => Action::FocusColumnLeft,
          Keysym::Right => Action::FocusColumnRight,
 diff --git a/src/layout/mod.rs b/src/layout/mod.rs
-index 5c4dd639..41170def 100644
+index 5c4dd639..7fdcf2d7 100644
 --- a/src/layout/mod.rs
 +++ b/src/layout/mod.rs
 @@ -364,6 +364,8 @@ pub struct Layout<W: LayoutElement> {
@@ -229,7 +229,53 @@ index 5c4dd639..41170def 100644
              options: opts,
          }
      }
-@@ -2501,11 +2505,17 @@ impl<W: LayoutElement> Layout<W> {
+@@ -799,7 +803,7 @@ impl<W: LayoutElement> Layout<W> {
+ 
+                 let ws_id_to_activate = self.last_active_workspace_id.remove(&output.name());
+ 
+-                let mut monitor = Monitor::new(
++                let monitor = Monitor::new(
+                     output,
+                     workspaces,
+                     ws_id_to_activate,
+@@ -807,8 +811,6 @@ impl<W: LayoutElement> Layout<W> {
+                     self.options.clone(),
+                     layout_config,
+                 );
+-                monitor.overview_open = self.overview_open;
+-                monitor.set_overview_progress(self.overview_progress.as_ref());
+                 monitors.push(monitor);
+ 
+                 MonitorSet::Normal {
+@@ -820,7 +822,7 @@ impl<W: LayoutElement> Layout<W> {
+             MonitorSet::NoOutputs { workspaces } => {
+                 let ws_id_to_activate = self.last_active_workspace_id.remove(&output.name());
+ 
+-                let mut monitor = Monitor::new(
++                let monitor = Monitor::new(
+                     output,
+                     workspaces,
+                     ws_id_to_activate,
+@@ -828,16 +830,14 @@ impl<W: LayoutElement> Layout<W> {
+                     self.options.clone(),
+                     layout_config,
+                 );
+-                monitor.overview_open = self.overview_open;
+-                monitor.set_overview_progress(self.overview_progress.as_ref());
+-
+                 MonitorSet::Normal {
+                     monitors: vec![monitor],
+                     primary_idx: 0,
+                     active_monitor_idx: 0,
+                 }
+             }
+-        }
++        };
++        self.set_monitors_overview_state();
+     }
+ 
+     pub fn remove_output(&mut self, output: &Output) {
+@@ -2501,11 +2501,17 @@ impl<W: LayoutElement> Layout<W> {
                  "monitor base options must be synchronized with layout"
              );
  
@@ -252,7 +298,7 @@ index 5c4dd639..41170def 100644
  
              monitor.verify_invariants();
  
-@@ -2709,10 +2719,11 @@ impl<W: LayoutElement> Layout<W> {
+@@ -2709,10 +2715,11 @@ impl<W: LayoutElement> Layout<W> {
              }
          }
  
@@ -265,7 +311,26 @@ index 5c4dd639..41170def 100644
                      mon.advance_animations();
                  }
              }
-@@ -3721,6 +3732,12 @@ impl<W: LayoutElement> Layout<W> {
+@@ -2810,7 +2817,17 @@ impl<W: LayoutElement> Layout<W> {
+                 let is_active = self.is_active
+                     && idx == *active_monitor_idx
+                     && !matches!(self.interactive_move, Some(InteractiveMoveState::Moving(_)));
+-                mon.set_overview_progress(self.overview_progress.as_ref());
++                let participates = self
++                    .overview_output
++                    .as_ref()
++                    .is_none_or(|output| mon.output == *output);
++                let progress = if participates {
++                    self.overview_progress.as_ref()
++                } else {
++                    None
++                };
++                mon.overview_open = self.overview_open && participates;
++                mon.set_overview_progress(progress);
+                 mon.update_render_elements(is_active);
+             }
+         }
+@@ -3721,6 +3738,12 @@ impl<W: LayoutElement> Layout<W> {
  
      pub fn overview_gesture_begin(&mut self) {
          self.overview_open = true;
@@ -278,7 +343,7 @@ index 5c4dd639..41170def 100644
  
          let value = self.overview_progress.take().map_or(0., |p| p.value());
          let gesture = OverviewGesture {
-@@ -4583,18 +4600,50 @@ impl<W: LayoutElement> Layout<W> {
+@@ -4583,18 +4606,50 @@ impl<W: LayoutElement> Layout<W> {
      }
  
      pub fn set_monitors_overview_state(&mut self) {
@@ -333,7 +398,7 @@ index 5c4dd639..41170def 100644
  
          let from = self.overview_progress.take().map_or(0., |p| p.value());
          let to = if self.overview_open { 1. } else { 0. };
-@@ -4611,11 +4660,15 @@ impl<W: LayoutElement> Layout<W> {
+@@ -4611,11 +4666,15 @@ impl<W: LayoutElement> Layout<W> {
      }
  
      pub fn open_overview(&mut self) -> bool {
@@ -351,10 +416,10 @@ index 5c4dd639..41170def 100644
      }
  
 diff --git a/src/layout/tests.rs b/src/layout/tests.rs
-index 31265dd9..fe33163d 100644
+index 31265dd9..aabcc4ce 100644
 --- a/src/layout/tests.rs
 +++ b/src/layout/tests.rs
-@@ -3697,6 +3697,41 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
+@@ -3697,6 +3697,42 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
      check_ops(ops);
  }
  
@@ -366,6 +431,7 @@ index 31265dd9..fe33163d 100644
 +
 +    let mut active_only_layout = check_ops_with_options(options.clone(), ops.clone());
 +    active_only_layout.toggle_overview();
++    active_only_layout.update_render_elements(None);
 +    let MonitorSet::Normal {
 +        monitors,
 +        active_monitor_idx,
