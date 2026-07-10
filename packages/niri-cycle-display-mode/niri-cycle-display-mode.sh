@@ -575,6 +575,46 @@ picker_is_active() {
   return 1
 }
 
+picker_output_is_valid() {
+  local candidate="$1"
+  local output
+
+  for output in "${outputs[@]}"; do
+    [ "$output" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+picker_read_output() {
+  local action="$1"
+  local candidate
+
+  candidate="$(fuzzel --dmenu --prompt-only "$action output: ")" || return 1
+  if picker_output_is_valid "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  notify_display "Unknown display" "$candidate"
+  return 1
+}
+
+write_picker_config() {
+  local destination="$1"
+  local user_config="${XDG_CONFIG_HOME:-$HOME/.config}/fuzzel/fuzzel.ini"
+
+  if [ -r "$user_config" ]; then
+    cat "$user_config" >"$destination"
+  else
+    : >"$destination"
+  fi
+  cat >>"$destination" <<'EOF'
+
+[key-bindings]
+execute-or-next=Control+Shift+F12
+custom-1=Tab
+EOF
+}
+
 display_picker() {
   picker_is_active && return 0
 
@@ -592,21 +632,60 @@ display_picker() {
   mkdir -p "$state_dir"
   printf '%s\n' "$$" >"$f9_picker_pid_file"
   trap 'rm -f "$f9_picker_pid_file"' EXIT
+  picker_config="$(mktemp "$state_dir/fuzzel-picker.XXXXXX.ini")"
+  trap 'rm -f "$f9_picker_pid_file" "$picker_config"' EXIT
+  write_picker_config "$picker_config"
 
-  menu="Extend"
-  for output in "${outputs[@]}"; do
-    menu="$menu
+  picker_mode=enumerated
+  while true; do
+    if [ "$picker_mode" = enumerated ]; then
+      menu="Extend"
+      for output in "${outputs[@]}"; do
+        menu="$menu
 Single isolated: $output
-Single migrate: $output"
-  done
-  menu="$menu
-Mirror"
+Single migrate: $output
+Mirror: $output"
+      done
+      prompt="Display [Tab: templates]: "
+    else
+      menu="Extend
+Single isolated: OUTPUT
+Single migrate: OUTPUT
+Mirror: OUTPUT"
+      prompt="Display template [Tab: all choices]: "
+    fi
 
-  selection=$(printf '%s\n' "$menu" | fuzzel --dmenu --prompt "Display: ") || exit 0
+    set +e
+    selection="$(printf '%s\n' "$menu" | fuzzel --config "$picker_config" --dmenu --only-match --prompt "$prompt")"
+    picker_status="$?"
+    set -e
+    if [ "$picker_status" -eq 10 ]; then
+      if [ "$picker_mode" = enumerated ]; then
+        picker_mode=templates
+      else
+        picker_mode=enumerated
+      fi
+      continue
+    fi
+    [ "$picker_status" -eq 0 ] || exit 0
+    break
+  done
 
   case "$selection" in
   Extend)
     apply_extend
+    ;;
+  "Single isolated: OUTPUT")
+    target="$(picker_read_output "Single isolated")" || exit 0
+    apply_single_isolated "$target"
+    ;;
+  "Single migrate: OUTPUT")
+    target="$(picker_read_output "Single migrate")" || exit 0
+    apply_single_migrate "$target"
+    ;;
+  "Mirror: OUTPUT")
+    source_output="$(picker_read_output "Mirror source")" || exit 0
+    apply_mirror "$source_output"
     ;;
   "Single isolated: "*)
     apply_single_isolated "${selection#Single isolated: }"
@@ -614,12 +693,8 @@ Mirror"
   "Single migrate: "*)
     apply_single_migrate "${selection#Single migrate: }"
     ;;
-  Mirror)
-    source_output="$(focused_output || true)"
-    if [ -z "$source_output" ] || ! output_is_active "$source_output"; then
-      source_output="${active_outputs[0]:-$(first_single_target)}"
-    fi
-    apply_mirror "$source_output"
+  "Mirror: "*)
+    apply_mirror "${selection#Mirror: }"
     ;;
   esac
 }
