@@ -120,6 +120,7 @@ in
         pkgs.dev.johnrinehart.claude-code-nix
         pkgs.dev.johnrinehart.codex-cli-nix
         pkgs.dev.johnrinehart.herdr
+        pkgs.dev.johnrinehart.pi-nix
       ];
 
       # Always publish a system Codex config layer for agentTools-enabled hosts,
