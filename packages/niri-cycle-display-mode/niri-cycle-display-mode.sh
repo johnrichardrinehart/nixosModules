@@ -300,27 +300,29 @@ apply_extend() {
   notify_display "Displays extended" "${#outputs[@]} outputs active"
 }
 
-mirror_process_is_on_output() {
+mirror_window_id_on_output() {
   local pid="$1"
   local target_output="$2"
-  local workspace_id
+  local window_id workspace_id
 
-  workspace_id="$(
+  read -r window_id workspace_id < <(
     niri msg --json windows 2>/dev/null |
-      jq -r --argjson pid "$pid" '.[] | select(.pid == $pid) | .workspace_id' |
+      jq -r --argjson pid "$pid" \
+        '.[] | select(.pid == $pid) | [.id, .workspace_id] | @tsv' |
       head -n 1
-  )"
-  [ -n "$workspace_id" ] || return 1
+  )
+  [ -n "$window_id" ] && [ -n "$workspace_id" ] || return 1
 
   niri msg --json workspaces 2>/dev/null |
     jq -e --argjson workspace_id "$workspace_id" --arg output "$target_output" \
-      'any(.[]; .id == $workspace_id and .output == $output)' >/dev/null
+      'any(.[]; .id == $workspace_id and .output == $output)' >/dev/null || return 1
+  printf '%s\n' "$window_id"
 }
 
 start_mirror_target() {
   local source_output="$1"
   local target_output="$2"
-  local log_file pid ready
+  local log_file pid ready window_id
 
   log_file="$state_dir/wl-mirror-${target_output}.log"
   for _ in 1 2 3; do
@@ -333,7 +335,9 @@ start_mirror_target() {
       if ! kill -0 "$pid" 2>/dev/null; then
         break
       fi
-      if mirror_process_is_on_output "$pid" "$target_output"; then
+      window_id="$(mirror_window_id_on_output "$pid" "$target_output" || true)"
+      if [ -n "$window_id" ]; then
+        niri msg action focus-window --id "$window_id" >/dev/null || true
         ready=true
         break
       fi
