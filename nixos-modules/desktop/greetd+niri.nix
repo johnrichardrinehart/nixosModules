@@ -44,9 +44,12 @@ let
     input-toggle-notify
     keyboard-brightness-notify
     monitor-power-notify
-    niri-cycle-display-mode
     volume-notify
     ;
+
+  niri-cycle-display-mode = pkgs.dev.johnrinehart.niri-cycle-display-mode.override {
+    niri = config.programs.niri.package;
+  };
 
   clipboard-store-notify = pkgs.dev.johnrinehart.clipboard-store-notify;
   clipboard-watch = pkgs.dev.johnrinehart.clipboard-watch.override {
