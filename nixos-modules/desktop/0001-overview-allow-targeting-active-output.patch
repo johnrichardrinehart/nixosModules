@@ -1,58 +1,28 @@
-diff --git a/docs/wiki/Configuration:-Miscellaneous.md b/docs/wiki/Configuration:-Miscellaneous.md
-index 7a2f42dd..d33b92e6 100644
---- a/docs/wiki/Configuration:-Miscellaneous.md
-+++ b/docs/wiki/Configuration:-Miscellaneous.md
-@@ -214,6 +214,24 @@ overview {
- }
- ```
+diff --git a/docs/wiki/Overview.md b/docs/wiki/Overview.md
+index f9bb94a3..fd565dea 100644
+--- a/docs/wiki/Overview.md
++++ b/docs/wiki/Overview.md
+@@ -12,6 +12,18 @@ https://github.com/user-attachments/assets/379a5d1f-acdb-4c11-b36c-e85fd91f0995
+ </video>
  
-+#### `only-active-output`
+ Open it with the `toggle-overview` bind, via the top-left hot corner, or using a touchpad four-finger swipe up.
++On a multi-output setup, `toggle-overview` and `open-overview` target the active output by default.
++Set `all-outputs=true` on an action to include every output:
++
++```kdl
++binds {
++    Mod+O { toggle-overview; }
++    Mod+Shift+O { toggle-overview all-outputs=true; }
++}
++```
 +
 +<sup>Since: next release</sup>
 +
-+By default, the overview opens on every output. Set `only-active-output=true`
-+to limit it to the active output while leaving other outputs unchanged. An
-+overview action can override this default with its `all-outputs` property.
-+
-+```kdl
-+overview only-active-output=true {
-+}
-+
-+binds {
-+    Mod+O { toggle-overview; }
-+    Mod+Shift+O { toggle-overview all-outputs=true; }
-+}
-+```
-+
- #### `backdrop-color`
+ While in the overview, all keyboard shortcuts keep working, while pointing devices get easier:
  
- Set the backdrop color behind workspaces in the overview.
-diff --git a/docs/wiki/Overview.md b/docs/wiki/Overview.md
-index f9bb94a3..aa94f29b 100644
---- a/docs/wiki/Overview.md
-+++ b/docs/wiki/Overview.md
-@@ -54,6 +54,19 @@ overview {
- }
- ```
- 
-+To open the overview only on the active output by default, while retaining a
-+binding that opens it on every output:
-+
-+```kdl
-+overview only-active-output=true {
-+}
-+
-+binds {
-+    Mod+O { toggle-overview; }
-+    Mod+Shift+O { toggle-overview all-outputs=true; }
-+}
-+```
-+
- To change the color behind the workspaces, use the `backdrop-color` setting:
- 
- ```kdl
+ - Mouse: left click and drag windows to move them, right click and drag to scroll workspaces left/right, scroll to switch workspaces (no holding Mod required).
 diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
-index e1a6a546..851c7d56 100644
+index e1a6a546..d9818975 100644
 --- a/niri-config/src/binds.rs
 +++ b/niri-config/src/binds.rs
 @@ -362,8 +362,8 @@ pub enum Action {
@@ -61,8 +31,8 @@ index e1a6a546..851c7d56 100644
      StopCast(u64),
 -    ToggleOverview,
 -    OpenOverview,
-+    ToggleOverview(#[knuffel(property(name = "all-outputs"))] Option<bool>),
-+    OpenOverview(#[knuffel(property(name = "all-outputs"))] Option<bool>),
++    ToggleOverview(#[knuffel(property(name = "all-outputs"), default)] bool),
++    OpenOverview(#[knuffel(property(name = "all-outputs"), default)] bool),
      CloseOverview,
      #[knuffel(skip)]
      ToggleWindowUrgent(u64),
@@ -78,130 +48,109 @@ index e1a6a546..851c7d56 100644
              niri_ipc::Action::ToggleWindowUrgent { id } => Self::ToggleWindowUrgent(id),
              niri_ipc::Action::SetWindowUrgent { id } => Self::SetWindowUrgent(id),
 diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
-index 77f07967..c95698a8 100644
+index 77f07967..5e795352 100644
 --- a/niri-config/src/lib.rs
 +++ b/niri-config/src/lib.rs
-@@ -648,6 +648,16 @@ mod tests {
+@@ -648,6 +648,23 @@ mod tests {
          assert_eq!(config.input.keyboard.repeat_rate, 25);
      }
  
 +    #[test]
-+    fn overview_only_active_output() {
-+        let config = Config::parse_mem("").unwrap();
-+        assert!(!config.overview.only_active_output);
++    fn overview_action_scope() {
++        let config = Config::parse_mem(
++            "binds { Mod+O { toggle-overview; }; Mod+Shift+O { toggle-overview all-outputs=true; }; }",
++        )
++        .unwrap();
 +
-+        let config = Config::parse_mem("overview only-active-output=true { zoom 0.25; }").unwrap();
-+        assert!(config.overview.only_active_output);
-+        assert_eq!(config.overview.zoom, 0.25);
++        assert_eq!(
++            config.binds.0[0].action,
++            binds::Action::ToggleOverview(false)
++        );
++        assert_eq!(
++            config.binds.0[1].action,
++            binds::Action::ToggleOverview(true)
++        );
 +    }
 +
      #[track_caller]
      fn do_parse(text: &str) -> Config {
          Config::parse_mem(text)
-@@ -1674,6 +1684,7 @@ mod tests {
-             },
-             overview: Overview {
-                 zoom: 0.5,
-+                only_active_output: false,
-                 backdrop_color: Color {
-                     r: 0.15,
-                     g: 0.15,
-diff --git a/niri-config/src/misc.rs b/niri-config/src/misc.rs
-index 66a200ca..bcc6fe7a 100644
---- a/niri-config/src/misc.rs
-+++ b/niri-config/src/misc.rs
-@@ -121,6 +121,7 @@ impl MergeWith<ClipboardPart> for Clipboard {
- #[derive(Debug, Clone, Copy, PartialEq)]
- pub struct Overview {
-     pub zoom: f64,
-+    pub only_active_output: bool,
-     pub backdrop_color: Color,
-     pub workspace_shadow: WorkspaceShadow,
- }
-@@ -129,6 +130,7 @@ impl Default for Overview {
-     fn default() -> Self {
-         Self {
-             zoom: 0.5,
-+            only_active_output: false,
-             backdrop_color: DEFAULT_BACKDROP_COLOR,
-             workspace_shadow: WorkspaceShadow::default(),
-         }
-@@ -139,6 +141,8 @@ impl Default for Overview {
- pub struct OverviewPart {
-     #[knuffel(child, unwrap(argument))]
-     pub zoom: Option<FloatOrInt<0, 1>>,
-+    #[knuffel(property(name = "only-active-output"))]
-+    pub only_active_output: Option<bool>,
-     #[knuffel(child)]
-     pub backdrop_color: Option<Color>,
-     #[knuffel(child)]
-@@ -148,7 +152,7 @@ pub struct OverviewPart {
- impl MergeWith<OverviewPart> for Overview {
-     fn merge_with(&mut self, part: &OverviewPart) {
-         merge!((self, part), zoom, workspace_shadow);
--        merge_clone!((self, part), backdrop_color);
-+        merge_clone!((self, part), only_active_output, backdrop_color);
-     }
- }
- 
 diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
-index 218e532c..068fe80f 100644
+index 218e532c..c2ea20d9 100644
 --- a/niri-ipc/src/lib.rs
 +++ b/niri-ipc/src/lib.rs
-@@ -909,9 +909,17 @@ pub enum Action {
+@@ -909,9 +909,19 @@ pub enum Action {
          session_id: u64,
      },
      /// Toggle (open/close) the Overview.
 -    ToggleOverview {},
 +    ToggleOverview {
-+        /// Override whether the Overview includes every output.
++        /// Whether the Overview includes every output.
++        #[serde(default)]
 +        #[cfg_attr(feature = "clap", arg(long))]
-+        all_outputs: Option<bool>,
++        all_outputs: bool,
 +    },
      /// Open the Overview.
 -    OpenOverview {},
 +    OpenOverview {
-+        /// Override whether the Overview includes every output.
++        /// Whether the Overview includes every output.
++        #[serde(default)]
 +        #[cfg_attr(feature = "clap", arg(long))]
-+        all_outputs: Option<bool>,
++        all_outputs: bool,
 +    },
      /// Close the Overview.
      CloseOverview {},
      /// Toggle urgent status of a window.
 diff --git a/src/input/mod.rs b/src/input/mod.rs
-index 50567530..e2169c8f 100644
+index 50567530..34a9eefe 100644
 --- a/src/input/mod.rs
 +++ b/src/input/mod.rs
-@@ -2271,12 +2271,14 @@ impl State {
+@@ -2271,12 +2271,12 @@ impl State {
              Action::StopCast(session_id) => {
                  self.niri.stop_cast(CastSessionId::from(session_id));
              }
 -            Action::ToggleOverview => {
 -                self.niri.layout.toggle_overview();
 +            Action::ToggleOverview(all_outputs) => {
-+                self.niri
-+                    .layout
-+                    .toggle_overview_with_all_outputs(all_outputs);
++                self.niri.layout.toggle_overview(all_outputs);
                  self.niri.queue_redraw_all();
              }
 -            Action::OpenOverview => {
 -                if self.niri.layout.open_overview() {
 +            Action::OpenOverview(all_outputs) => {
-+                if self.niri.layout.open_overview_with_all_outputs(all_outputs) {
++                if self.niri.layout.open_overview(all_outputs) {
                      self.niri.queue_redraw_all();
                  }
              }
-@@ -4737,7 +4739,7 @@ fn hardcoded_overview_bind(raw: Keysym, mods: ModifiersState) -> Option<Bind> {
+@@ -2631,7 +2631,7 @@ impl State {
+                     .with_grab(|_, grab| grab_allows_hot_corner(grab))
+                     .unwrap_or(true)
+             {
+-                self.niri.layout.toggle_overview();
++                self.niri.layout.toggle_overview(true);
+             }
+             self.niri.pointer_inside_hot_corner = true;
+         }
+@@ -2718,7 +2718,7 @@ impl State {
+                     .with_grab(|_, grab| grab_allows_hot_corner(grab))
+                     .unwrap_or(true)
+             {
+-                self.niri.layout.toggle_overview();
++                self.niri.layout.toggle_overview(true);
+             }
+             self.niri.pointer_inside_hot_corner = true;
+         }
+@@ -4737,7 +4737,7 @@ fn hardcoded_overview_bind(raw: Keysym, mods: ModifiersState) -> Option<Bind> {
      let action = match raw {
          Keysym::Escape | Keysym::Return => {
              repeat = false;
 -            Action::ToggleOverview
-+            Action::ToggleOverview(None)
++            Action::ToggleOverview(false)
          }
          Keysym::Left => Action::FocusColumnLeft,
          Keysym::Right => Action::FocusColumnRight,
 diff --git a/src/layout/mod.rs b/src/layout/mod.rs
-index 5c4dd639..7fdcf2d7 100644
+index 5c4dd639..d266ea08 100644
 --- a/src/layout/mod.rs
 +++ b/src/layout/mod.rs
 @@ -364,6 +364,8 @@ pub struct Layout<W: LayoutElement> {
@@ -330,20 +279,15 @@ index 5c4dd639..7fdcf2d7 100644
                  mon.update_render_elements(is_active);
              }
          }
-@@ -3721,6 +3738,12 @@ impl<W: LayoutElement> Layout<W> {
+@@ -3721,6 +3738,7 @@ impl<W: LayoutElement> Layout<W> {
  
      pub fn overview_gesture_begin(&mut self) {
          self.overview_open = true;
-+        self.overview_output = self
-+            .options
-+            .overview
-+            .only_active_output
-+            .then(|| self.active_output().cloned())
-+            .flatten();
++        self.overview_output = None;
  
          let value = self.overview_progress.take().map_or(0., |p| p.value());
          let gesture = OverviewGesture {
-@@ -4583,18 +4606,50 @@ impl<W: LayoutElement> Layout<W> {
+@@ -4583,18 +4601,45 @@ impl<W: LayoutElement> Layout<W> {
      }
  
      pub fn set_monitors_overview_state(&mut self) {
@@ -383,14 +327,10 @@ index 5c4dd639..7fdcf2d7 100644
          }
      }
  
-     pub fn toggle_overview(&mut self) {
-+        self.toggle_overview_with_all_outputs(None);
-+    }
-+
-+    pub fn toggle_overview_with_all_outputs(&mut self, all_outputs: Option<bool>) {
+-    pub fn toggle_overview(&mut self) {
++    pub fn toggle_overview(&mut self, all_outputs: bool) {
          self.overview_open = !self.overview_open;
 +        if self.overview_open {
-+            let all_outputs = all_outputs.unwrap_or(!self.options.overview.only_active_output);
 +            self.overview_output = (!all_outputs)
 +                .then(|| self.active_output().cloned())
 +                .flatten();
@@ -398,39 +338,62 @@ index 5c4dd639..7fdcf2d7 100644
  
          let from = self.overview_progress.take().map_or(0., |p| p.value());
          let to = if self.overview_open { 1. } else { 0. };
-@@ -4611,11 +4666,15 @@ impl<W: LayoutElement> Layout<W> {
+@@ -4610,12 +4655,12 @@ impl<W: LayoutElement> Layout<W> {
+         self.set_monitors_overview_state();
      }
  
-     pub fn open_overview(&mut self) -> bool {
-+        self.open_overview_with_all_outputs(None)
-+    }
-+
-+    pub fn open_overview_with_all_outputs(&mut self, all_outputs: Option<bool>) -> bool {
+-    pub fn open_overview(&mut self) -> bool {
++    pub fn open_overview(&mut self, all_outputs: bool) -> bool {
          if self.overview_open {
              return false;
          }
  
 -        self.toggle_overview();
-+        self.toggle_overview_with_all_outputs(all_outputs);
++        self.toggle_overview(all_outputs);
          true
      }
  
+@@ -4624,7 +4669,7 @@ impl<W: LayoutElement> Layout<W> {
+             return false;
+         }
+ 
+-        self.toggle_overview();
++        self.toggle_overview(false);
+         true
+     }
+ 
+@@ -4633,7 +4678,7 @@ impl<W: LayoutElement> Layout<W> {
+         if let Some(mon) = self.active_monitor() {
+             mon.activate_workspace_with_anim_config(ws_idx, Some(config));
+         }
+-        self.toggle_overview();
++        self.toggle_overview(false);
+     }
+ 
+     pub fn start_open_animation_for_window(&mut self, window: &W::Id) {
 diff --git a/src/layout/tests.rs b/src/layout/tests.rs
-index 31265dd9..aabcc4ce 100644
+index 31265dd9..c74359b0 100644
 --- a/src/layout/tests.rs
 +++ b/src/layout/tests.rs
-@@ -3697,6 +3697,42 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
+@@ -1615,7 +1615,7 @@ impl Op {
+                 layout.interactive_resize_end(&window);
+             }
+             Op::ToggleOverview => {
+-                layout.toggle_overview();
++                layout.toggle_overview(true);
+             }
+             Op::UpdateConfig { layout_config } => {
+                 let options = Options {
+@@ -3697,6 +3697,41 @@ fn expel_pending_left_from_fullscreen_tabbed_column() {
      check_ops(ops);
  }
  
 +#[test]
 +fn overview_can_target_only_active_output() {
 +    let ops = [Op::AddOutput(1), Op::AddOutput(2)];
-+    let mut options = Options::default();
-+    options.overview.only_active_output = true;
 +
-+    let mut active_only_layout = check_ops_with_options(options.clone(), ops.clone());
-+    active_only_layout.toggle_overview();
++    let mut active_only_layout = check_ops(ops.clone());
++    active_only_layout.toggle_overview(false);
 +    active_only_layout.update_render_elements(None);
 +    let MonitorSet::Normal {
 +        monitors,
@@ -448,8 +411,9 @@ index 31265dd9..aabcc4ce 100644
 +        );
 +    }
 +
-+    let mut all_outputs_layout = check_ops_with_options(options, ops);
-+    all_outputs_layout.toggle_overview_with_all_outputs(Some(true));
++    let mut all_outputs_layout = check_ops(ops);
++    all_outputs_layout.toggle_overview(true);
++    all_outputs_layout.update_render_elements(None);
 +    let MonitorSet::Normal { monitors, .. } = &all_outputs_layout.monitor_set else {
 +        unreachable!()
 +    };
@@ -463,7 +427,7 @@ index 31265dd9..aabcc4ce 100644
  fn workspace_render_geo_at_fractional_scale() {
      let ops = [
 diff --git a/src/ui/hotkey_overlay.rs b/src/ui/hotkey_overlay.rs
-index 34bc3955..c5e25b37 100644
+index 34bc3955..8d380b03 100644
 --- a/src/ui/hotkey_overlay.rs
 +++ b/src/ui/hotkey_overlay.rs
 @@ -257,7 +257,7 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
@@ -471,7 +435,7 @@ index 34bc3955..c5e25b37 100644
          &Action::ToggleWindowFloating,
          &Action::SwitchFocusBetweenFloatingAndTiling,
 -        &Action::ToggleOverview,
-+        &Action::ToggleOverview(None),
++        &Action::ToggleOverview(false),
      ]);
  
      // Screenshot is not as important, can omit if not bound.
