@@ -1,18 +1,18 @@
 diff --git a/docs/wiki/Overview.md b/docs/wiki/Overview.md
-index f9bb94a3..fd565dea 100644
+index f9bb94a3..b60794bf 100644
 --- a/docs/wiki/Overview.md
 +++ b/docs/wiki/Overview.md
 @@ -12,6 +12,18 @@ https://github.com/user-attachments/assets/379a5d1f-acdb-4c11-b36c-e85fd91f0995
  </video>
  
  Open it with the `toggle-overview` bind, via the top-left hot corner, or using a touchpad four-finger swipe up.
-+On a multi-output setup, `toggle-overview` and `open-overview` target the active output by default.
-+Set `all-outputs=true` on an action to include every output:
++On a multi-output setup, `toggle-overview` and `open-overview` include every output by default.
++Set `all-outputs=false` on an action to target only the active output:
 +
 +```kdl
 +binds {
-+    Mod+O { toggle-overview; }
-+    Mod+Shift+O { toggle-overview all-outputs=true; }
++    Mod+O { toggle-overview all-outputs=false; }
++    Mod+Shift+O { toggle-overview; }
 +}
 +```
 +
@@ -22,7 +22,7 @@ index f9bb94a3..fd565dea 100644
  
  - Mouse: left click and drag windows to move them, right click and drag to scroll workspaces left/right, scroll to switch workspaces (no holding Mod required).
 diff --git a/niri-config/src/binds.rs b/niri-config/src/binds.rs
-index e1a6a546..d9818975 100644
+index e1a6a546..4a8c028d 100644
 --- a/niri-config/src/binds.rs
 +++ b/niri-config/src/binds.rs
 @@ -362,8 +362,8 @@ pub enum Action {
@@ -31,8 +31,8 @@ index e1a6a546..d9818975 100644
      StopCast(u64),
 -    ToggleOverview,
 -    OpenOverview,
-+    ToggleOverview(#[knuffel(property(name = "all-outputs"), default)] bool),
-+    OpenOverview(#[knuffel(property(name = "all-outputs"), default)] bool),
++    ToggleOverview(#[knuffel(property(name = "all-outputs"), default = true)] bool),
++    OpenOverview(#[knuffel(property(name = "all-outputs"), default = true)] bool),
      CloseOverview,
      #[knuffel(skip)]
      ToggleWindowUrgent(u64),
@@ -48,7 +48,7 @@ index e1a6a546..d9818975 100644
              niri_ipc::Action::ToggleWindowUrgent { id } => Self::ToggleWindowUrgent(id),
              niri_ipc::Action::SetWindowUrgent { id } => Self::SetWindowUrgent(id),
 diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
-index 77f07967..5e795352 100644
+index 77f07967..1c9ba856 100644
 --- a/niri-config/src/lib.rs
 +++ b/niri-config/src/lib.rs
 @@ -648,6 +648,23 @@ mod tests {
@@ -58,7 +58,7 @@ index 77f07967..5e795352 100644
 +    #[test]
 +    fn overview_action_scope() {
 +        let config = Config::parse_mem(
-+            "binds { Mod+O { toggle-overview; }; Mod+Shift+O { toggle-overview all-outputs=true; }; }",
++            "binds { Mod+O { toggle-overview all-outputs=false; }; Mod+Shift+O { toggle-overview; }; }",
 +        )
 +        .unwrap();
 +
@@ -76,33 +76,50 @@ index 77f07967..5e795352 100644
      fn do_parse(text: &str) -> Config {
          Config::parse_mem(text)
 diff --git a/niri-ipc/src/lib.rs b/niri-ipc/src/lib.rs
-index 218e532c..c2ea20d9 100644
+index 218e532c..f7487f6b 100644
 --- a/niri-ipc/src/lib.rs
 +++ b/niri-ipc/src/lib.rs
-@@ -909,9 +909,19 @@ pub enum Action {
+@@ -183,6 +183,10 @@ pub struct PickedColor {
+     pub rgb: [f64; 3],
+ }
+ 
++const fn default_true() -> bool {
++    true
++}
++
+ /// Actions that niri can perform.
+ // Variants in this enum should match the spelling of the ones in niri-config. Most, but not all,
+ // variants from niri-config should be present here.
+@@ -909,9 +913,25 @@ pub enum Action {
          session_id: u64,
      },
      /// Toggle (open/close) the Overview.
 -    ToggleOverview {},
 +    ToggleOverview {
 +        /// Whether the Overview includes every output.
-+        #[serde(default)]
-+        #[cfg_attr(feature = "clap", arg(long))]
++        #[serde(default = "default_true")]
++        #[cfg_attr(
++            feature = "clap",
++            arg(long, action = clap::ArgAction::Set, default_value_t = true)
++        )]
 +        all_outputs: bool,
 +    },
      /// Open the Overview.
 -    OpenOverview {},
 +    OpenOverview {
 +        /// Whether the Overview includes every output.
-+        #[serde(default)]
-+        #[cfg_attr(feature = "clap", arg(long))]
++        #[serde(default = "default_true")]
++        #[cfg_attr(
++            feature = "clap",
++            arg(long, action = clap::ArgAction::Set, default_value_t = true)
++        )]
 +        all_outputs: bool,
 +    },
      /// Close the Overview.
      CloseOverview {},
      /// Toggle urgent status of a window.
 diff --git a/src/input/mod.rs b/src/input/mod.rs
-index 50567530..34a9eefe 100644
+index 50567530..de552a67 100644
 --- a/src/input/mod.rs
 +++ b/src/input/mod.rs
 @@ -2271,12 +2271,12 @@ impl State {
@@ -145,7 +162,7 @@ index 50567530..34a9eefe 100644
          Keysym::Escape | Keysym::Return => {
              repeat = false;
 -            Action::ToggleOverview
-+            Action::ToggleOverview(false)
++            Action::ToggleOverview(true)
          }
          Keysym::Left => Action::FocusColumnLeft,
          Keysym::Right => Action::FocusColumnRight,
@@ -427,7 +444,7 @@ index 31265dd9..c74359b0 100644
  fn workspace_render_geo_at_fractional_scale() {
      let ops = [
 diff --git a/src/ui/hotkey_overlay.rs b/src/ui/hotkey_overlay.rs
-index 34bc3955..8d380b03 100644
+index 34bc3955..ef749046 100644
 --- a/src/ui/hotkey_overlay.rs
 +++ b/src/ui/hotkey_overlay.rs
 @@ -257,7 +257,7 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
@@ -435,7 +452,7 @@ index 34bc3955..8d380b03 100644
          &Action::ToggleWindowFloating,
          &Action::SwitchFocusBetweenFloatingAndTiling,
 -        &Action::ToggleOverview,
-+        &Action::ToggleOverview(false),
++        &Action::ToggleOverview(true),
      ]);
  
      // Screenshot is not as important, can omit if not bound.
