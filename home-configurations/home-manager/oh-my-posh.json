@@ -52,8 +52,8 @@
           ],
           "powerline_symbol": "",
           "template": " {{ .HEAD }}{{if .BranchStatus }} {{ .BranchStatus }}{{ end }} ",
-          "properties": {
-            "branch_template": "{{ trunc 25 .Branch }}",
+          "options": {
+            "branch_template": "{{ if eq .Branch \"(null)\" }}{{ .Env.OMP_GIT_BRANCH }}{{ else }}{{ trunc 25 .Branch }}{{ end }}",
             "fetch_status": true
           },
           "style": "powerline",

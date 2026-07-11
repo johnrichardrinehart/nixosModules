@@ -564,10 +564,19 @@ in
           # https://blog.vghaisas.com/zsh-beep-sound/
               unsetopt BEEP
 
-              prompt() {
               eval $("${lib.getExe pkgs.oh-my-posh}" init zsh --config "${./oh-my-posh.json}");
+              _omp_get_prompt() {
+                local type=$1 ref branch
+                local args=("''${@[2,-1]}")
+                if ref=$(git symbolic-ref --quiet HEAD 2>/dev/null); then
+                  case "$ref" in
+                    refs/repo-manager/*/heads/*) branch="''${ref#*/heads/}" ;;
+                    refs/heads/*) branch="''${ref#refs/heads/}" ;;
+                    *) branch="$ref" ;;
+                  esac
+                fi
+                OMP_GIT_BRANCH="$branch" POSH_SESSION_ID= $_omp_executable print $type --config "${./oh-my-posh.json}" --shell=zsh --shell-version=$ZSH_VERSION --status=$_omp_status --no-status=$_omp_no_status --execution-time=$_omp_execution_time --job-count=$_omp_job_count --stack-count=$_omp_stack_count --terminal-width="''${COLUMNS-0}" ''${args[@]}
               }
-              precmd_functions+=(prompt)
         '';
     };
 
