@@ -48,31 +48,48 @@ in
         These fix Thunderbolt DisplayPort tunnel failures after suspend/hibernate.
       '';
     };
+
+    icmFirmwareRescan = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Expose a Thunderbolt-domain rescan trigger that asks Intel Connection
+        Manager firmware to report attached routers again. This recovers the
+        S4 failure where the domain survives but its downstream router vanishes.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
     # Kernel config for PCI debugging
-    boot.kernelPatches = lib.optionals cfg.kernelPatches [
-      # Fix D3cold->D0 and D0->D3hot transition failures (hibernate/suspend)
-      # Adds retry logic with exponential backoff (~10s total) for Thunderbolt
-      {
-        name = "pci-power-state-retry";
-        patch = ../known_problems/thunderbolt-hibernate-displayport-failure/0001-PCI-Add-retry-logic-for-power-state-transitions.patch;
-      }
-      # Fix NULL pointer dereference in Device Tree code when hotplug races with failed resume
-      {
-        name = "pci-of-null-check";
-        patch = ../known_problems/thunderbolt-hibernate-displayport-failure/0002-PCI-OF-Check-subordinate-before-accessing-bus-range.patch;
-      }
-      # Enable PCI debug output (useful with dyndbg)
-      {
-        name = "pci-debug-config";
-        patch = null;
-        structuredExtraConfig = with lib.kernel; {
-          PCI_DEBUG = yes;
-        };
-      }
-    ];
+    boot.kernelPatches =
+      lib.optionals cfg.kernelPatches [
+        # Fix D3cold->D0 and D0->D3hot transition failures (hibernate/suspend)
+        # Adds retry logic with exponential backoff (~10s total) for Thunderbolt
+        {
+          name = "pci-power-state-retry";
+          patch = ../known_problems/thunderbolt-hibernate-displayport-failure/0001-PCI-Add-retry-logic-for-power-state-transitions.patch;
+        }
+        # Fix NULL pointer dereference in Device Tree code when hotplug races with failed resume
+        {
+          name = "pci-of-null-check";
+          patch = ../known_problems/thunderbolt-hibernate-displayport-failure/0002-PCI-OF-Check-subordinate-before-accessing-bus-range.patch;
+        }
+        # Enable PCI debug output (useful with dyndbg)
+        {
+          name = "pci-debug-config";
+          patch = null;
+          structuredExtraConfig = with lib.kernel; {
+            PCI_DEBUG = yes;
+          };
+        }
+      ]
+      ++ lib.optionals cfg.icmFirmwareRescan [
+        {
+          name = "thunderbolt-icm-firmware-rescan";
+          patch = ../known_problems/thunderbolt-hibernate-displayport-failure/0005-thunderbolt-expose-ICM-device-re-enumeration.patch;
+        }
+      ];
 
     # Kernel command line parameters for boot-time verbose logging
     boot.kernelParams = lib.optionals cfg.bootVerbose [
