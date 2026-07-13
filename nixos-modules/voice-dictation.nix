@@ -14,10 +14,6 @@ let
     lib.types.package
     lib.types.path
   ];
-  modelSourcePackageNames = [
-    "moonshine-models-source"
-  ]
-  ++ lib.optional (lib.isDerivation cfg.modelSource) (lib.getName cfg.modelSource);
   onnxruntimePackage =
     if usesOpenVINO then pkgs.dev.johnrinehart.onnxruntime-openvino else pkgs.onnxruntime;
   defaultModelArchitectures = pkgs.dev.johnrinehart.moonshine-models-source.modelArchMap;
@@ -96,6 +92,15 @@ in
         defaults to fixed-output fetches from download.moonshine.ai, but can be
         overridden with a local derivation that copies files from a tarball or
         another offline source.
+      '';
+    };
+
+    modelSourceUnfreePackageNames = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "moonshine-models-source" ];
+      description = ''
+        Unfree package names required by modelSource. Override this alongside
+        modelSource when supplying a source with different licensing.
       '';
     };
 
@@ -215,7 +220,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    dev.johnrinehart.nix.allowedUnfreePackages = modelSourcePackageNames;
+    dev.johnrinehart.nix.allowedUnfreePackages = cfg.modelSourceUnfreePackageNames;
 
     environment.systemPackages = [
       cfg.package
