@@ -215,7 +215,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) modelSourcePackageNames;
+    dev.johnrinehart.nix.allowedUnfreePackages = modelSourcePackageNames;
 
     environment.systemPackages = [
       cfg.package

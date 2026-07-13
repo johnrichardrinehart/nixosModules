@@ -21,8 +21,6 @@ in
       default = "xorg-xmonad";
       description = "The desktop configuration variant to enable.";
     };
-
-    obsidian = lib.mkEnableOption "packaging Obsidian into the system.";
   };
 
   imports = [

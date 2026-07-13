@@ -49,6 +49,7 @@
     ./locale.nix
     ./network.nix
     ./nix.nix
+    ./obsidian.nix
     ./packages.nix
     ./repo-manager.nix
     ./s3_mount.nix

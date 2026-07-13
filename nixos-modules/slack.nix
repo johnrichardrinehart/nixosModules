@@ -1,4 +1,9 @@
-{ pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.dev.johnrinehart.slack;
 in
@@ -8,12 +13,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    dev.johnrinehart.nix.allowedUnfreePackages = [ "slack" ];
     environment.systemPackages = [ pkgs.slack ];
-
-    nixpkgs.config.allowUnfreePredicate =
-      pkg:
-      builtins.elem (lib.getName pkg) [
-        "slack"
-      ];
   };
 }
