@@ -52,8 +52,8 @@ find_latest_snapshot_json() {
         select(.type == "event_msg")
         | select(.payload.type == "token_count")
         | select(.payload.rate_limits.limit_id == "codex")
-        | select(.payload.rate_limits.secondary != null)
-        | select(.payload.rate_limits.secondary.used_percent != null)
+        | select(any([.payload.rate_limits.primary, .payload.rate_limits.secondary][]?;
+            .window_minutes == 10080 and .used_percent != null))
         | [.timestamp, .]
       ' 2>/dev/null |
       jq -src 'sort_by(.[0]) | last | .[1]' 2>/dev/null
@@ -106,10 +106,15 @@ one_shot() {
     return 1
   }
 
-  local used win_min reset now start elapsed remain on_pace gap on_pace_h snapshot_ts snapshot_age
-  used="$(printf '%s\n' "$snapshot" | jq -r '.payload.rate_limits.secondary.used_percent')"
-  win_min="$(printf '%s\n' "$snapshot" | jq -r '.payload.rate_limits.secondary.window_minutes')"
-  reset="$(printf '%s\n' "$snapshot" | jq -r '.payload.rate_limits.secondary.resets_at')"
+  local weekly_limit used win_min reset now start elapsed remain on_pace gap on_pace_h snapshot_ts snapshot_age
+  weekly_limit="$(
+    printf '%s\n' "$snapshot" |
+      jq -rc 'first([.payload.rate_limits.primary, .payload.rate_limits.secondary][]?
+        | select(.window_minutes == 10080 and .used_percent != null))'
+  )"
+  used="$(printf '%s\n' "$weekly_limit" | jq -r '.used_percent')"
+  win_min="$(printf '%s\n' "$weekly_limit" | jq -r '.window_minutes')"
+  reset="$(printf '%s\n' "$weekly_limit" | jq -r '.resets_at')"
   snapshot_ts="$(printf '%s\n' "$snapshot" | jq -r '.timestamp')"
   now="$(date +%s)"
   snapshot_age=$((now - $(date -d "$snapshot_ts" +%s)))
