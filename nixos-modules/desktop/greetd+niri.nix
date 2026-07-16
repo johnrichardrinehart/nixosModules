@@ -57,10 +57,10 @@ let
     inherit clipboard-store-notify;
   };
 
-  # Wallpaper, served by awww. Unlike hyprpaper, awww's daemon watches
-  # for output changes and re-applies the image to monitors that appear after
-  # it started (hotplug / wake), which hyprpaper cannot do outside Hyprland
-  # because its IPC is disabled under niri.
+  # Wallpaper, served by awww. The daemon creates surfaces for hotplugged
+  # outputs, but initializes them to black rather than inheriting the current
+  # image. Keep a small watcher beside it that applies the configured image to
+  # every newly created surface.
   #
   # The source image is huge (7952x5304); awww decodes it into per-output
   # buffer pools, so we pre-scale it down to 4K to keep the daemon's resident
@@ -70,20 +70,37 @@ let
       -resize 3840x2160^ -quality 92 $out
   '';
 
-  # niri tracks the foreground process, so we exec the daemon and set the image
-  # from a backgrounded subshell that waits for the daemon's socket first (the
-  # `awww img` client call otherwise races daemon startup).
+  # Keep the shell as a tiny supervisor so the watcher cannot outlive the
+  # daemon. Polling the daemon's own state avoids connector-name assumptions
+  # and covers hotplug, MST renumbering, and resume without relying on niri's
+  # event-stream format.
   awww-wallpaper = pkgs.writeShellScript "awww-wallpaper" ''
-    set -eu
+    set -u
     awww="${lib.getExe' pkgs.awww "awww"}"
-    (
-      for _ in $(seq 1 50); do
-        "$awww" query >/dev/null 2>&1 && break
-        sleep 0.1
-      done
-      exec "$awww" img --resize crop ${wallpaper}
-    ) &
-    exec ${lib.getExe' pkgs.awww "awww-daemon"}
+    daemon="${lib.getExe' pkgs.awww "awww-daemon"}"
+    jq="${lib.getExe pkgs.jq}"
+
+    "$daemon" &
+    daemon_pid=$!
+    trap 'kill "$daemon_pid" 2>/dev/null || true' EXIT INT TERM
+
+    while kill -0 "$daemon_pid" 2>/dev/null; do
+      missing=$(
+        "$awww" query --json 2>/dev/null \
+          | "$jq" -r '[.[][] | select(.displaying.color? != null) | .name] | join(",")'
+      ) || missing=""
+
+      if [[ -n $missing ]]; then
+        "$awww" img \
+          --outputs "$missing" \
+          --resize crop \
+          --transition-type none \
+          ${wallpaper} >/dev/null 2>&1 || true
+      fi
+      sleep 1
+    done
+
+    wait "$daemon_pid"
   '';
 
   # Shared PAM configuration for password authentication with an optional
