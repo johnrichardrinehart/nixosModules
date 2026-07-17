@@ -11,9 +11,9 @@ Run:
 
 ```bash
 if [ -n "${ARGUMENTS:-}" ]; then
-  codex-weekly-pace ${ARGUMENTS}
+  env CODEX_WEEKLY_PACE_RUN=1 codex-weekly-pace ${ARGUMENTS}
 else
-  codex-weekly-pace
+  env CODEX_WEEKLY_PACE_RUN=1 codex-weekly-pace
 fi
 ```
 
