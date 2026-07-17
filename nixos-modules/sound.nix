@@ -223,10 +223,15 @@ in
       };
     };
 
-    micMonitor.enable = lib.mkOption {
+    softwareMicMonitor.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Enable a software loopback for monitoring rnnoise_source in the default headphones.";
+      description = ''
+        Enable a PipeWire software loopback that plays the processed
+        rnnoise_source through the default audio output. This is independent
+        of hardware direct-monitoring controls provided by devices such as the
+        Samson Q9U.
+      '';
     };
 
     debug = {
@@ -380,7 +385,7 @@ in
         # Keep this opt-in: USB microphones such as the Samson Q9U can provide
         # their own zero-latency hardware monitor, and running both creates an
         # echo/comb-filtered headphone signal.
-        "30-mic-monitor" = lib.mkIf cfg.micMonitor.enable {
+        "30-mic-monitor" = lib.mkIf cfg.softwareMicMonitor.enable {
           "context.modules" = [
             {
               name = "libpipewire-module-loopback";
