@@ -84,57 +84,90 @@ in
     "oh-my-codex".enable =
       lib.mkEnableOption "oh-my-codex multi-agent orchestration layer for Codex CLI";
 
-    codexCli.statusLinePlugins = lib.mkOption {
-      type = with lib.types; listOf str;
-      default = [ ];
-      example = [ "codex-weekly-pace" ];
-      description = ''
-        Status-line plugin names to expose in the system Codex config layer.
-        When this contains "codex-weekly-pace", the corresponding helper
-        package is installed into systemPackages.
-      '';
+    pi = {
+      enable = lib.mkEnableOption "Pi coding agent";
     };
 
-    codexCli.configLayers = lib.mkOption {
-      type = with lib.types; listOf path;
-      default = [ ];
-      description = ''
-        Additional Codex config.toml layers to merge between the base system
-        layer and sandbox layer. Submodules can publish configuration here.
-      '';
+    codexCli = {
+      enable = lib.mkEnableOption "Codex CLI";
+
+      statusLinePlugins = lib.mkOption {
+        type = with lib.types; listOf str;
+        default = [ ];
+        example = [ "codex-weekly-pace" ];
+        description = ''
+          Status-line plugin names to expose in the system Codex config layer.
+          When this contains "codex-weekly-pace", the corresponding helper
+          package is installed into systemPackages.
+        '';
+      };
+
+      configLayers = lib.mkOption {
+        type = with lib.types; listOf path;
+        default = [ ];
+        description = ''
+          Additional Codex config.toml layers to merge between the base system
+          layer and sandbox layer. Submodules can publish configuration here.
+        '';
+      };
+
+      hooksSource = lib.mkOption {
+        type = with lib.types; nullOr path;
+        default = null;
+        description = ''
+          Optional hooks.json source published by a submodule.
+        '';
+      };
     };
 
-    codexCli.hooksSource = lib.mkOption {
-      type = with lib.types; nullOr path;
-      default = null;
-      description = ''
-        Optional hooks.json source published by a submodule.
-      '';
+    claudeCodeCli = {
+      enable = lib.mkEnableOption "Claude Code CLI";
     };
   };
 
   config = lib.mkMerge [
     (lib.mkIf cfg.enable {
+      dev.johnrinehart.agentTools = {
+        pi.enable = lib.mkDefault true;
+        codexCli.enable = lib.mkDefault true;
+        claudeCodeCli.enable = lib.mkDefault true;
+      };
+
       environment.systemPackages = [
         pkgs.dev.johnrinehart.agent-deck
-        pkgs.dev.johnrinehart.claude-code-nix
-        pkgs.dev.johnrinehart.codex-cli-nix
         pkgs.dev.johnrinehart.herdr
-        pkgs.dev.johnrinehart.pi-nix
       ];
+    })
+    (lib.mkIf cfg.pi.enable {
+      environment.systemPackages = [ pkgs.dev.johnrinehart.pi-nix ];
+    })
+    (lib.mkIf cfg.codexCli.enable {
+      environment.systemPackages = [ pkgs.dev.johnrinehart.codex-cli-nix ];
 
-      # Always publish a system Codex config layer for agentTools-enabled hosts,
+      # Always publish a system Codex config layer when Codex CLI is enabled,
       # even when OMX is disabled.
       environment.etc."codex/config.toml".source = codexMergedConfig;
     })
-    (lib.mkIf (cfg.enable && lib.elem "codex-weekly-pace" cfg.codexCli.statusLinePlugins) {
+    (lib.mkIf (cfg.codexCli.enable && lib.elem "codex-weekly-pace" cfg.codexCli.statusLinePlugins) {
       environment.systemPackages = [ pkgs.dev.johnrinehart.codex-weekly-pace ];
+    })
+    (lib.mkIf cfg.claudeCodeCli.enable {
+      environment.systemPackages = [ pkgs.dev.johnrinehart.claude-code-nix ];
     })
     (lib.mkIf cfg."oh-my-codex".enable (
       let
         codexOmxLayer = pkgs.dev.johnrinehart.codex-omx-layer;
       in
       {
+        assertions = [
+          {
+            assertion = cfg.codexCli.enable;
+            message = "dev.johnrinehart.agentTools.oh-my-codex.enable requires dev.johnrinehart.agentTools.codexCli.enable";
+          }
+        ];
+
+        dev.johnrinehart.agentTools.codexCli.enable = lib.mkDefault true;
+
         environment.systemPackages = [
           pkgs.dev.johnrinehart.oh-my-codex
           pkgs.dev.johnrinehart.omx-agent-tools
@@ -142,13 +175,9 @@ in
 
         dev.johnrinehart.agentTools.codexCli.configLayers = lib.mkAfter [ codexOmxLayer.config ];
         dev.johnrinehart.agentTools.codexCli.hooksSource = lib.mkDefault codexOmxLayer.hooks;
-
-        # Codex discovers hooks.json next to each config.toml layer; keep OMX in
-        # the immutable system layer so user/project hooks can coexist separately.
-        environment.etc."codex/hooks.json".source = cfg.codexCli.hooksSource;
       }
     ))
-    (lib.mkIf (cfg.enable && cfg.codexCli.hooksSource != null) {
+    (lib.mkIf (cfg.codexCli.enable && cfg.codexCli.hooksSource != null) {
       environment.etc."codex/hooks.json".source = cfg.codexCli.hooksSource;
     })
   ];
