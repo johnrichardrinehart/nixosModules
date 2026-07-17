@@ -28,8 +28,27 @@ let
       "oh-my-codex".enable = true;
       codexCli.enable = false;
     }).config;
+  dedicatedUsers =
+    (evaluate {
+      pi = {
+        enable = true;
+        createWheelUser = true;
+      };
+      codexCli = {
+        enable = true;
+        createWheelUser = true;
+      };
+      claudeCodeCli = {
+        enable = true;
+        createWheelUser = true;
+      };
+    }).config;
   packageNames = config: map lib.getName config.environment.systemPackages;
   failedAssertions = config: builtins.filter (entry: !entry.assertion) config.assertions;
+  hasWheelUser =
+    name: config:
+    config.users.users.${name}.isNormalUser
+    && builtins.elem "wheel" config.users.users.${name}.extraGroups;
 in
 assert builtins.all (name: builtins.elem name (packageNames profile)) [
   "pi"
@@ -60,6 +79,9 @@ assert builtins.any (
 ) (failedAssertions invalidOmxProfile);
 assert !(invalidOmxProfile.environment.etc ? "codex/config.toml");
 assert !(invalidOmxProfile.environment.etc ? "codex/hooks.json");
+assert hasWheelUser "pi" dedicatedUsers;
+assert hasWheelUser "codex" dedicatedUsers;
+assert hasWheelUser "claude" dedicatedUsers;
 pkgs.runCommand "agent-tools-module-evaluation" { } ''
   touch $out
 ''

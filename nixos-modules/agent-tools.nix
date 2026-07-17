@@ -86,10 +86,12 @@ in
 
     pi = {
       enable = lib.mkEnableOption "Pi coding agent";
+      createWheelUser = lib.mkEnableOption "a dedicated pi user with wheel access";
     };
 
     codexCli = {
       enable = lib.mkEnableOption "Codex CLI";
+      createWheelUser = lib.mkEnableOption "a dedicated codex user with wheel access";
 
       statusLinePlugins = lib.mkOption {
         type = with lib.types; listOf str;
@@ -122,6 +124,7 @@ in
 
     claudeCodeCli = {
       enable = lib.mkEnableOption "Claude Code CLI";
+      createWheelUser = lib.mkEnableOption "a dedicated claude user with wheel access";
     };
   };
 
@@ -141,6 +144,12 @@ in
     (lib.mkIf cfg.pi.enable {
       environment.systemPackages = [ pkgs.dev.johnrinehart.pi-nix ];
     })
+    (lib.mkIf (cfg.pi.enable && cfg.pi.createWheelUser) {
+      users.users.pi = {
+        isNormalUser = true;
+        extraGroups = [ "wheel" ];
+      };
+    })
     (lib.mkIf cfg.codexCli.enable {
       environment.systemPackages = [ pkgs.dev.johnrinehart.codex-cli-nix ];
 
@@ -148,11 +157,23 @@ in
       # even when OMX is disabled.
       environment.etc."codex/config.toml".source = codexMergedConfig;
     })
+    (lib.mkIf (cfg.codexCli.enable && cfg.codexCli.createWheelUser) {
+      users.users.codex = {
+        isNormalUser = true;
+        extraGroups = [ "wheel" ];
+      };
+    })
     (lib.mkIf (cfg.codexCli.enable && lib.elem "codex-weekly-pace" cfg.codexCli.statusLinePlugins) {
       environment.systemPackages = [ pkgs.dev.johnrinehart.codex-weekly-pace ];
     })
     (lib.mkIf cfg.claudeCodeCli.enable {
       environment.systemPackages = [ pkgs.dev.johnrinehart.claude-code-nix ];
+    })
+    (lib.mkIf (cfg.claudeCodeCli.enable && cfg.claudeCodeCli.createWheelUser) {
+      users.users.claude = {
+        isNormalUser = true;
+        extraGroups = [ "wheel" ];
+      };
     })
     (lib.mkIf cfg."oh-my-codex".enable (
       let
