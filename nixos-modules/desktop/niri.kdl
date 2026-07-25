@@ -392,6 +392,9 @@ binds {
     Shift+XF86Display allow-when-locked=true allow-inhibiting=false {
         spawn "@display_layout_editor@"
     }
+    Shift+F9 allow-when-locked=true allow-inhibiting=false {
+        spawn "@display_layout_editor@"
+    }
     // Open/close the Overview: a zoomed-out view of workspaces and windows.
     // You can also move the mouse into the top-left hot corner,
     // or do a four-finger swipe up on a touchpad.
