@@ -85,6 +85,8 @@
       };
 
       flake = {
+        lib = inputs.nixpkgs.lib;
+
         nixosModules.default = import ./nixos-modules {
           inherit inputs;
           inherit (inputs.nixpkgs) lib;

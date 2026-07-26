@@ -6,6 +6,7 @@ supporting assets.
 This repository is intended to be consumed as a flake input by host/system
 configuration repositories. It exposes:
 
+- `lib`
 - `nixosModules.default`
 - `overlays.default`
 - per-system `packages`
