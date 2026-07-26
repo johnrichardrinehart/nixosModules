@@ -16,6 +16,7 @@
   imports = [
     inputs.home-manager.nixosModules.default
     inputs.sops-nix.nixosModules.default
+    inputs.wayland-session-supervisor.nixosModules.default
 
     (
       { config, pkgs, ... }:
@@ -42,6 +43,7 @@
     ./external-display-telemetry.nix
     ./filepicker.nix
     ./firmware/framework-ec.nix
+    ./hardware/i915
     ./fonts.nix
     ./gocryptfs.nix
     ./ide.nix

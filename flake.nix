@@ -11,6 +11,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    wayland-session-supervisor = {
+      url = "github:johnrichardrinehart/wayland-session-supervisor";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
       flake = true;
@@ -77,6 +82,22 @@
                 checks = {
                   pre-commit = preCommitCheck;
                   formatting = treefmtEval.config.build.check inputs.self;
+                  agent-tools-module = import ./nix/checks/agent-tools-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
+                  i915-module = import ./nix/checks/i915-module.nix {
+                    inherit pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
+                  greetd-niri-pam-module = import ./nix/checks/greetd-niri-pam-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
+                  obsidian-module = import ./nix/checks/obsidian-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                 };
 
                 formatter = treefmtEval.config.build.wrapper;

@@ -1,0 +1,3210 @@
+diff --git a/drivers/gpu/drm/i915/Makefile b/drivers/gpu/drm/i915/Makefile
+index b677720a1c2dba721fcc910a83643996d2ad3299..05bde40d88ee17f8112cea1d9143d4c96c45f703 100644
+--- a/drivers/gpu/drm/i915/Makefile
++++ b/drivers/gpu/drm/i915/Makefile
+@@ -25,6 +25,7 @@ subdir-ccflags-y += -I$(src)
+ # core driver code
+ i915-y += \
+ 	i915_config.o \
++	i915_criu.o \
+ 	i915_driver.o \
+ 	i915_drm_client.o \
+ 	i915_edram.o \
+diff --git a/drivers/gpu/drm/i915/gem/i915_gem_context.c b/drivers/gpu/drm/i915/gem/i915_gem_context.c
+index 6ac0f23570f335791e92bc2b32d3c6bd338720d2..11f4c46815ab82fddfd83c4ddc737f4fe5d54701 100644
+--- a/drivers/gpu/drm/i915/gem/i915_gem_context.c
++++ b/drivers/gpu/drm/i915/gem/i915_gem_context.c
+@@ -2366,10 +2366,12 @@ int i915_gem_context_create_ioctl(struct drm_device *dev, void *data,
+ {
+ 	struct drm_i915_private *i915 = to_i915(dev);
+ 	struct drm_i915_gem_context_create_ext *args = data;
++	struct drm_i915_file_private *file_priv = file->driver_priv;
+ 	struct create_ext ext_data;
+ 	int ret;
+ 	u32 id;
+ 
++	file_priv->criu_context_touched = true;
+ 	if (!DRIVER_CAPS(i915)->has_logical_contexts)
+ 		return -ENODEV;
+ 
+@@ -2442,6 +2444,7 @@ int i915_gem_context_destroy_ioctl(struct drm_device *dev, void *data,
+ 	struct i915_gem_proto_context *pc;
+ 	struct i915_gem_context *ctx;
+ 
++	file_priv->criu_context_touched = true;
+ 	if (args->pad != 0)
+ 		return -EINVAL;
+ 
+@@ -2606,6 +2609,7 @@ int i915_gem_context_setparam_ioctl(struct drm_device *dev, void *data,
+ 	struct i915_gem_context *ctx;
+ 	int ret = 0;
+ 
++	file_priv->criu_context_touched = true;
+ 	mutex_lock(&file_priv->proto_context_lock);
+ 	ctx = __context_lookup(file_priv, args->ctx_id);
+ 	if (!ctx) {
+diff --git a/drivers/gpu/drm/i915/gem/i915_gem_object_types.h b/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
+index 969f6ea2b855c7bb801ac86d9ddd8ff078d49aab..2071840da3d74f3131b0167b990bd30461d2bc65 100644
+--- a/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
++++ b/drivers/gpu/drm/i915/gem/i915_gem_object_types.h
+@@ -250,6 +250,9 @@ struct drm_i915_gem_object {
+ 
+ 	const struct drm_i915_gem_object_ops *ops;
+ 
++	/* Stable opaque identity for versioned CRIU object-graph images. */
++	u64 criu_id;
++
+ 	struct {
+ 		/**
+ 		 * @vma.lock: protect the list/tree of vmas
+diff --git a/drivers/gpu/drm/i915/i915_criu.c b/drivers/gpu/drm/i915/i915_criu.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..29900cc0d2498192ad84b6d885a2215be6cdde89
+--- /dev/null
++++ b/drivers/gpu/drm/i915/i915_criu.c
+@@ -0,0 +1,2493 @@
++// SPDX-License-Identifier: MIT
++/* Experimental versioned i915 checkpoint/restore transaction. */
++
++#include <linux/capability.h>
++#include <linux/dma-buf.h>
++#include <linux/dma-fence-chain.h>
++#include <linux/file.h>
++#include <linux/pid.h>
++#include <linux/ptrace.h>
++#include <linux/pci.h>
++#include <linux/random.h>
++#include <linux/sched/task.h>
++#include <linux/sizes.h>
++#include <linux/string.h>
++#include <linux/sync_file.h>
++#include <linux/uaccess.h>
++
++#include <drm/drm_auth.h>
++#include <drm/drm_file.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_gem.h>
++#include <drm/drm_mode_config.h>
++#include <drm/drm_property.h>
++#include <drm/drm_syncobj.h>
++#include <drm/drm_vma_manager.h>
++
++#include "i915_criu.h"
++#include "i915_drv.h"
++#include "i915_file_private.h"
++#include "gem/i915_gem_context.h"
++#include "gem/i915_gem_ioctls.h"
++#include "gem/i915_gem_object.h"
++#include "gt/intel_engine_user.h"
++#include "display/intel_fb.h"
++#include "i915_gpu_error.h"
++#include "i915_request.h"
++#include "i915_vma.h"
++
++#define I915_CRIU_MODE_NONE 0
++#define I915_CRIU_MODE_DUMP 1
++#define I915_CRIU_MODE_RESTORE 2
++
++static DEFINE_MUTEX(i915_criu_object_id_lock);
++static atomic64_t i915_criu_next_object_id = ATOMIC64_INIT(0);
++
++static u64 checkpoint_object_id(struct drm_i915_gem_object *obj)
++{
++	u64 id;
++
++	mutex_lock(&i915_criu_object_id_lock);
++	id = obj->criu_id;
++	if (!id) {
++		id = atomic64_inc_return(&i915_criu_next_object_id);
++		if (!id)
++			id = atomic64_inc_return(&i915_criu_next_object_id);
++		obj->criu_id = id;
++	}
++	mutex_unlock(&i915_criu_object_id_lock);
++	return id;
++}
++
++static int authorize_dump_target(pid_t pid)
++{
++	struct task_struct *task;
++	int ret = 0;
++
++	/*
++	 * The transaction can expose only objects reachable through this exact
++	 * drm_file. Obtaining another task's descriptor and naming that task must
++	 * nevertheless satisfy the same credential and LSM checks as ptrace.
++	 */
++	if (pid <= 0)
++		return -EINVAL;
++
++	rcu_read_lock();
++	task = get_pid_task(find_vpid(pid), PIDTYPE_PID);
++	rcu_read_unlock();
++	if (!task)
++		return -ESRCH;
++
++	if (!ptrace_may_access(task, PTRACE_MODE_ATTACH_REALCREDS))
++		ret = -EACCES;
++	put_task_struct(task);
++
++	return ret;
++}
++
++static void abort_restore(struct drm_file *file)
++{
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	unsigned long index;
++	void *entry;
++
++	xa_for_each(&fpriv->criu_restore_fbs, index, entry) {
++		struct drm_framebuffer *fb = entry;
++
++		xa_erase(&fpriv->criu_restore_fbs, index);
++		mutex_lock(&file->fbs_lock);
++		if (!list_empty(&fb->filp_head))
++			list_del_init(&fb->filp_head);
++		mutex_unlock(&file->fbs_lock);
++		drm_framebuffer_remove(fb);
++	}
++	xa_for_each(&fpriv->criu_restore_blobs, index, entry) {
++		struct drm_property_blob *blob = entry;
++
++		xa_erase(&fpriv->criu_restore_blobs, index);
++		mutex_lock(&file->minor->dev->mode_config.blob_lock);
++		if (!list_empty(&blob->head_file))
++			list_del_init(&blob->head_file);
++		mutex_unlock(&file->minor->dev->mode_config.blob_lock);
++		drm_property_blob_put(blob);
++	}
++	xa_for_each(&fpriv->criu_restore_bindings, index, entry) {
++		struct i915_vma *vma = entry;
++
++		xa_erase(&fpriv->criu_restore_bindings, index);
++		if (i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND))
++			WARN_ON(i915_vma_unbind(vma));
++		i915_vma_put(vma);
++	}
++	fpriv->criu_restore_default_vm = false;
++	xa_for_each(&fpriv->criu_restore_handles, index, entry) {
++		u32 handle = xa_to_value(entry);
++
++		xa_erase(&fpriv->criu_restore_handles, index);
++		drm_gem_handle_delete(file, handle);
++	}
++	xa_for_each(&fpriv->criu_restore_syncobjs, index, entry) {
++		struct drm_syncobj *syncobj;
++		u32 handle = xa_to_value(entry);
++
++		xa_erase(&fpriv->criu_restore_syncobjs, index);
++		syncobj = xa_erase(&file->syncobj_xa, handle);
++		if (syncobj)
++			drm_syncobj_put(syncobj);
++	}
++	xa_for_each(&fpriv->criu_restore_contexts, index, entry) {
++		struct drm_i915_gem_context_destroy destroy = {
++			.ctx_id = xa_to_value(entry),
++		};
++
++		xa_erase(&fpriv->criu_restore_contexts, index);
++		i915_gem_context_destroy_ioctl(file->minor->dev, &destroy,
++					       file);
++	}
++	xa_for_each(&fpriv->criu_restore_vms, index, entry) {
++		struct drm_i915_gem_vm_control destroy = {
++			.vm_id = xa_to_value(entry),
++		};
++
++		xa_erase(&fpriv->criu_restore_vms, index);
++		i915_gem_vm_destroy_ioctl(file->minor->dev, &destroy, file);
++	}
++}
++
++void i915_criu_file_init(struct drm_file *file)
++{
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++
++	mutex_init(&fpriv->criu_lock);
++	xa_init(&fpriv->criu_restore_handles);
++	xa_init(&fpriv->criu_restore_syncobjs);
++	xa_init(&fpriv->criu_restore_contexts);
++	xa_init(&fpriv->criu_restore_vms);
++	xa_init_flags(&fpriv->criu_restore_bindings, XA_FLAGS_ALLOC);
++	xa_init(&fpriv->criu_restore_fbs);
++	xa_init(&fpriv->criu_restore_blobs);
++}
++
++void i915_criu_file_fini(struct drm_file *file)
++{
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (fpriv->criu_mode == I915_CRIU_MODE_RESTORE)
++		abort_restore(file);
++	fpriv->criu_mode = I915_CRIU_MODE_NONE;
++	fpriv->criu_cookie = 0;
++	mutex_unlock(&fpriv->criu_lock);
++	xa_destroy(&fpriv->criu_restore_handles);
++	xa_destroy(&fpriv->criu_restore_syncobjs);
++	xa_destroy(&fpriv->criu_restore_contexts);
++	xa_destroy(&fpriv->criu_restore_vms);
++	xa_destroy(&fpriv->criu_restore_bindings);
++	xa_destroy(&fpriv->criu_restore_fbs);
++	xa_destroy(&fpriv->criu_restore_blobs);
++}
++
++static struct i915_address_space *
++default_context_vm(struct drm_i915_file_private *fpriv)
++{
++	struct i915_gem_context *ctx = xa_load(&fpriv->context_xa, 0);
++
++	return ctx ? ctx->vm : NULL;
++}
++
++static u32 context_vm_id(struct drm_i915_file_private *fpriv,
++			 struct i915_address_space *context_vm)
++{
++	struct i915_address_space *vm;
++	unsigned long id;
++
++	if (!context_vm)
++		return 0;
++	xa_for_each(&fpriv->vm_xa, id, vm)
++		if (vm == context_vm)
++			return id;
++	if (context_vm == default_context_vm(fpriv))
++		return 0;
++	return U32_MAX;
++}
++
++static u32 checkpoint_user_context_flags(unsigned long user_flags,
++					 bool single_timeline)
++{
++	u32 flags = 0;
++
++	if (single_timeline)
++		flags |= I915_CRIU_CONTEXT_SINGLE_TIMELINE;
++	if (user_flags & BIT(UCONTEXT_NO_ERROR_CAPTURE))
++		flags |= I915_CRIU_CONTEXT_NO_ERROR_CAPTURE;
++	if (user_flags & BIT(UCONTEXT_BANNABLE))
++		flags |= I915_CRIU_CONTEXT_BANNABLE;
++	if (user_flags & BIT(UCONTEXT_RECOVERABLE))
++		flags |= I915_CRIU_CONTEXT_RECOVERABLE;
++	if (user_flags & BIT(UCONTEXT_PERSISTENCE))
++		flags |= I915_CRIU_CONTEXT_PERSISTENCE;
++	return flags;
++}
++
++static u32
++checkpoint_proto_context_flags(const struct i915_gem_proto_context *pc)
++{
++	u32 flags = checkpoint_user_context_flags(pc->user_flags,
++						 pc->single_timeline);
++
++	if (pc->num_user_engines >= 0)
++		flags |= I915_CRIU_CONTEXT_USER_ENGINES;
++	return flags;
++}
++
++static u32 checkpoint_active_context_flags(const struct i915_gem_context *ctx)
++{
++	u32 flags = checkpoint_user_context_flags(ctx->user_flags, !!ctx->syncobj);
++
++	if (test_bit(CONTEXT_USER_ENGINES, &ctx->flags))
++		flags |= I915_CRIU_CONTEXT_USER_ENGINES;
++	return flags;
++}
++
++static bool object_has_file_handle(struct drm_file *file,
++				   struct drm_i915_gem_object *object)
++{
++	struct drm_gem_object *candidate;
++	int handle;
++	bool found = false;
++
++	spin_lock(&file->table_lock);
++	idr_for_each_entry(&file->object_idr, candidate, handle) {
++		if (candidate == &object->base) {
++			found = true;
++			break;
++		}
++	}
++	spin_unlock(&file->table_lock);
++	return found;
++}
++
++static void set_session_failure(struct drm_i915_criu_session *args,
++				u32 stage, u32 reason, u64 id)
++{
++	if (args->failure_stage)
++		return;
++	args->failure_stage = stage;
++	args->failure_reason = reason;
++	args->failure_id = id;
++}
++
++static u64 context_engine_id(unsigned long context_id, unsigned int engine_id)
++{
++	return (u64)(u32)context_id << 32 | (u32)engine_id;
++}
++
++static int validate_active_context(struct drm_i915_file_private *fpriv,
++				   struct i915_gem_context *ctx,
++				   unsigned long context_id,
++				   bool require_tracked_vm,
++				   struct drm_i915_criu_session *args)
++{
++	const unsigned long allowed_user_flags =
++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
++		BIT(UCONTEXT_RECOVERABLE) | BIT(UCONTEXT_PERSISTENCE);
++	struct i915_gem_engines *engines;
++	bool user_engines;
++	unsigned int i;
++	int ret = 0;
++
++	if (ctx->uses_protected_content) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
++				    I915_CRIU_FAILURE_PROTECTED_CONTENT,
++				    context_id);
++		return -EOPNOTSUPP;
++	}
++	if (ctx->user_flags & ~allowed_user_flags) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
++				    I915_CRIU_FAILURE_USER_FLAGS, context_id);
++		return -EOPNOTSUPP;
++	}
++	if (require_tracked_vm && context_vm_id(fpriv, ctx->vm) == U32_MAX) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
++				    I915_CRIU_FAILURE_UNTRACKED_VM, context_id);
++		return -EOPNOTSUPP;
++	}
++
++	user_engines = test_bit(CONTEXT_USER_ENGINES, &ctx->flags);
++	engines = i915_gem_context_lock_engines(ctx);
++	if (user_engines &&
++	    (!engines || engines->num_engines > I915_CRIU_MAX_CONTEXT_ENGINES)) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
++				    I915_CRIU_FAILURE_ENGINE_COUNT, context_id);
++		ret = -EOPNOTSUPP;
++		goto out_engines;
++	}
++	for (i = 0; engines && i < engines->num_engines; i++) {
++		struct intel_context *ce = engines->engines[i];
++
++		if (!ce)
++			continue;
++		if (user_engines && intel_engine_is_virtual(ce->engine)) {
++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
++					    I915_CRIU_FAILURE_VIRTUAL_ENGINE,
++					    context_engine_id(context_id, i));
++			ret = -EOPNOTSUPP;
++			break;
++		}
++		if (user_engines &&
++		    memcmp(&ce->sseu, &ce->engine->sseu, sizeof(ce->sseu))) {
++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
++					    I915_CRIU_FAILURE_ENGINE_SSEU,
++					    context_engine_id(context_id, i));
++			ret = -EOPNOTSUPP;
++			break;
++		}
++		if (!intel_context_pin_if_active(ce))
++			continue;
++		intel_context_unpin(ce);
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT,
++				    I915_CRIU_FAILURE_ACTIVE_REQUEST,
++				    context_engine_id(context_id, i));
++		ret = -EBUSY;
++		break;
++	}
++out_engines:
++	i915_gem_context_unlock_engines(ctx);
++	return ret;
++}
++
++static int validate_proto_context_engines(
++	const struct i915_gem_proto_context *pc, unsigned long context_id,
++	struct drm_i915_criu_session *args)
++{
++	int i;
++
++	if (pc->num_user_engines < 0) {
++		if (!pc->user_engines)
++			return 0;
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++				    I915_CRIU_FAILURE_ENGINE_COUNT, context_id);
++		return -EOPNOTSUPP;
++	}
++	if (pc->num_user_engines > I915_CRIU_MAX_CONTEXT_ENGINES) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++				    I915_CRIU_FAILURE_ENGINE_COUNT, context_id);
++		return -EOPNOTSUPP;
++	}
++	for (i = 0; i < pc->num_user_engines; i++) {
++		const struct i915_gem_proto_engine *engine = &pc->user_engines[i];
++
++		if (engine->type == I915_GEM_ENGINE_TYPE_INVALID) {
++			if (engine->engine || engine->num_siblings || engine->width ||
++			    engine->siblings ||
++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu))) {
++				set_session_failure(
++					args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++					I915_CRIU_FAILURE_INVALID_ENGINE,
++					context_engine_id(context_id, i));
++				return -EOPNOTSUPP;
++			}
++		} else if (engine->type == I915_GEM_ENGINE_TYPE_PHYSICAL) {
++			if (!engine->engine || engine->num_siblings || engine->width ||
++			    engine->siblings ||
++			    memchr_inv(&engine->sseu, 0, sizeof(engine->sseu))) {
++				set_session_failure(
++					args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++					I915_CRIU_FAILURE_PHYSICAL_ENGINE,
++					context_engine_id(context_id, i));
++				return -EOPNOTSUPP;
++			}
++		} else {
++			set_session_failure(args,
++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++					    I915_CRIU_FAILURE_ENGINE_TYPE,
++					    context_engine_id(context_id, i));
++			return -EOPNOTSUPP;
++		}
++	}
++	return 0;
++}
++
++static int validate_checkpoint_vma(struct drm_file *file,
++				   struct i915_vma *vma, u32 vm_id,
++				   bool bound,
++				   struct drm_i915_criu_session *args)
++{
++	int flags = atomic_read(&vma->flags);
++
++	if (drm_mm_node_allocated(&vma->node) != bound) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_NODE, vm_id);
++		return -EOPNOTSUPP;
++	}
++	if (vma->guard) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_GUARD, vm_id);
++		return -EOPNOTSUPP;
++	}
++	if (vma->size != vma->obj->base.size) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_SIZE, vm_id);
++		return -EOPNOTSUPP;
++	}
++	if (vma->gtt_view.type != I915_GTT_VIEW_NORMAL) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_VIEW, vm_id);
++		return -EOPNOTSUPP;
++	}
++	if (i915_vma_is_active(vma)) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_ACTIVE, vm_id);
++		return -EBUSY;
++	}
++	if ((flags & I915_VMA_BIND_MASK) !=
++	    (bound ? I915_VMA_LOCAL_BIND : 0)) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_BIND_FLAGS, vm_id);
++		return -EOPNOTSUPP;
++	}
++	if (flags & (I915_VMA_PIN_MASK | I915_VMA_GLOBAL_BIND |
++		     I915_VMA_ERROR | I915_VMA_GGTT | I915_VMA_CAN_FENCE |
++		     I915_VMA_USERFAULT | I915_VMA_SCANOUT)) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_FLAGS, vm_id);
++		return -EOPNOTSUPP;
++	}
++	if (!object_has_file_handle(file, vma->obj)) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_VMA,
++				    I915_CRIU_FAILURE_VMA_MISSING_HANDLE, vm_id);
++		return -EOPNOTSUPP;
++	}
++	return 0;
++}
++
++static int validate_checkpoint_vm(struct drm_file *file,
++				  struct i915_address_space *vm, u32 vm_id,
++				  struct drm_i915_criu_session *args)
++{
++	struct i915_vma *vma;
++	int ret = 0;
++
++	mutex_lock(&vm->mutex);
++	list_for_each_entry(vma, &vm->bound_list, vm_link) {
++		ret = validate_checkpoint_vma(file, vma, vm_id, true, args);
++		if (ret)
++			goto out;
++	}
++	list_for_each_entry(vma, &vm->unbound_list, vm_link) {
++		ret = validate_checkpoint_vma(file, vma, vm_id, false, args);
++		if (ret)
++			goto out;
++	}
++out:
++	mutex_unlock(&vm->mutex);
++	return ret;
++}
++
++static int validate_checkpoint_contexts(
++	struct drm_file *file, struct drm_i915_criu_session *args)
++{
++	const unsigned long allowed_user_flags =
++		BIT(UCONTEXT_NO_ERROR_CAPTURE) | BIT(UCONTEXT_BANNABLE) |
++		BIT(UCONTEXT_RECOVERABLE) | BIT(UCONTEXT_PERSISTENCE);
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	struct i915_gem_proto_context *pc;
++	struct i915_gem_context *ctx;
++	struct i915_address_space *vm;
++	unsigned long id;
++	u32 context_count = 0;
++	u32 context_max = 0;
++	u32 expected_vm = 1;
++	int ret = 0;
++
++	xa_for_each(&fpriv->context_xa, id, ctx) {
++		ret = validate_active_context(fpriv, ctx, id, id != 0, args);
++		if (ret)
++			return ret;
++		if (id == 0)
++			continue;
++		context_count++;
++		context_max = max_t(u32, context_max, id);
++	}
++
++	mutex_lock(&fpriv->proto_context_lock);
++	xa_for_each(&fpriv->proto_context_xa, id, pc) {
++		context_count++;
++		context_max = max_t(u32, context_max, id);
++		if (pc->uses_protected_content || pc->pxp_wakeref) {
++			set_session_failure(
++				args, I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++				I915_CRIU_FAILURE_PROTECTED_CONTENT, id);
++			ret = -EOPNOTSUPP;
++			break;
++		}
++		if (pc->user_flags & ~allowed_user_flags) {
++			set_session_failure(args,
++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++					    I915_CRIU_FAILURE_USER_FLAGS, id);
++			ret = -EOPNOTSUPP;
++			break;
++		}
++		if (memchr_inv(&pc->legacy_rcs_sseu, 0,
++			       sizeof(pc->legacy_rcs_sseu))) {
++			set_session_failure(args,
++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++					    I915_CRIU_FAILURE_LEGACY_SSEU, id);
++			ret = -EOPNOTSUPP;
++			break;
++		}
++		if (context_vm_id(fpriv, pc->vm) == U32_MAX) {
++			set_session_failure(args,
++					    I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT,
++					    I915_CRIU_FAILURE_UNTRACKED_VM, id);
++			ret = -EOPNOTSUPP;
++			break;
++		}
++		ret = validate_proto_context_engines(pc, id, args);
++		if (ret)
++			break;
++	}
++	mutex_unlock(&fpriv->proto_context_lock);
++	if (ret)
++		return ret;
++	if (context_count != context_max) {
++		set_session_failure(args, I915_CRIU_FAILURE_STAGE_CONTEXT_IDS,
++				    I915_CRIU_FAILURE_ID_GAP, context_max);
++		return -EOPNOTSUPP;
++	}
++
++	vm = default_context_vm(fpriv);
++	if (vm && context_vm_id(fpriv, vm) == 0) {
++		ret = validate_checkpoint_vm(file, vm, 0, args);
++		if (ret)
++			return ret;
++	}
++	xa_for_each(&fpriv->vm_xa, id, vm) {
++		if (id != expected_vm++) {
++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_VM,
++					    I915_CRIU_FAILURE_ID_GAP, id);
++			return -EOPNOTSUPP;
++		}
++		ret = validate_checkpoint_vm(file, vm, id, args);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++static int describe_syncobj(struct drm_syncobj *syncobj, u32 *flags, u64 *point)
++{
++	struct dma_fence *fence;
++	unsigned long irqflags;
++	bool has_callbacks;
++
++	if (READ_ONCE(syncobj->file))
++		return -EXDEV;
++
++	spin_lock_irqsave(&syncobj->lock, irqflags);
++	has_callbacks = !list_empty(&syncobj->cb_list) ||
++			!list_empty(&syncobj->ev_fd_list);
++	spin_unlock_irqrestore(&syncobj->lock, irqflags);
++	if (has_callbacks)
++		return -EBUSY;
++
++	fence = drm_syncobj_fence_get(syncobj);
++	if (!fence) {
++		*flags = I915_CRIU_SYNCOBJ_EMPTY;
++		*point = 0;
++		return 0;
++	}
++	if (!dma_fence_is_signaled(fence)) {
++		dma_fence_put(fence);
++		return -EBUSY;
++	}
++	if (to_dma_fence_chain(fence)) {
++		*flags = I915_CRIU_SYNCOBJ_TIMELINE;
++		*point = fence->seqno;
++	} else {
++		*flags = I915_CRIU_SYNCOBJ_BINARY_SIGNALED;
++		*point = 0;
++	}
++	dma_fence_put(fence);
++	return 0;
++}
++
++static int describe_dma_buf(struct drm_i915_gem_object *obj,
++			    struct drm_i915_criu_object *args)
++{
++	struct dma_buf_attachment *attachment;
++	struct dma_buf *dmabuf = obj->base.dma_buf;
++	long refcount;
++	u32 attachment_count = 0;
++
++	if (!dmabuf)
++		return 0;
++
++	refcount = file_count(dmabuf->file);
++	if (refcount <= 0 || refcount > U32_MAX)
++		return -EOVERFLOW;
++	dma_resv_lock(dmabuf->resv, NULL);
++	list_for_each_entry(attachment, &dmabuf->attachments, node) {
++		if (attachment_count == U32_MAX) {
++			dma_resv_unlock(dmabuf->resv);
++			return -EOVERFLOW;
++		}
++		attachment_count++;
++	}
++	dma_resv_unlock(dmabuf->resv);
++	args->dma_buf_refcount = refcount;
++	args->dma_buf_attachment_count = attachment_count;
++	return attachment_count ? -EOPNOTSUPP : 0;
++}
++
++static int validate_syncobjs(struct drm_file *file,
++			     struct drm_i915_criu_session *args)
++{
++	struct drm_syncobj *syncobj;
++	unsigned long index;
++	int ret = 0;
++
++	xa_for_each(&file->syncobj_xa, index, syncobj) {
++		u32 flags;
++		u64 point;
++
++		drm_syncobj_get(syncobj);
++		ret = describe_syncobj(syncobj, &flags, &point);
++		drm_syncobj_put(syncobj);
++		if (ret) {
++			set_session_failure(args, I915_CRIU_FAILURE_STAGE_SYNCOBJ,
++					    -ret, index);
++			break;
++		}
++	}
++	return ret;
++}
++
++static u64 i915_criu_reset_epoch(struct drm_i915_private *i915)
++{
++	u64 epoch = i915_reset_count(&i915->gpu_error);
++	unsigned int class;
++
++	/* Engine resets do not necessarily advance the global reset counter. */
++	for (class = 0;
++	     class < ARRAY_SIZE(i915->gpu_error.reset_engine_count); class++)
++		epoch += atomic_read(&i915->gpu_error.reset_engine_count[class]);
++	return epoch;
++}
++
++static int check_session(struct drm_i915_file_private *fpriv, u64 cookie,
++			 u32 mode)
++{
++	if (fpriv->criu_mode != mode)
++		return -EINVAL;
++	if (!cookie || cookie != fpriv->criu_cookie)
++		return -ESTALE;
++	if (fpriv->criu_reset_epoch != i915_criu_reset_epoch(fpriv->i915))
++		return -EIO;
++	return 0;
++}
++
++int i915_criu_session_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file)
++{
++	struct drm_i915_criu_session *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	int ret = 0;
++
++	if (args->version != I915_CRIU_ABI_VERSION || args->flags ||
++	    args->failure_stage || args->failure_reason || args->failure_id ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	switch (args->op) {
++	case I915_CRIU_SESSION_DUMP_BEGIN:
++		if (fpriv->criu_mode != I915_CRIU_MODE_NONE) {
++			ret = -EBUSY;
++			break;
++		}
++		ret = authorize_dump_target(args->target_pid);
++		if (ret) {
++			set_session_failure(
++				args, I915_CRIU_FAILURE_STAGE_AUTHORIZATION,
++				I915_CRIU_FAILURE_ACCESS, args->target_pid);
++			break;
++		}
++		ret = validate_checkpoint_contexts(file, args);
++		if (ret)
++			break;
++		ret = validate_syncobjs(file, args);
++		if (ret)
++			break;
++		fpriv->criu_reset_epoch = i915_criu_reset_epoch(fpriv->i915);
++		fpriv->criu_mode = I915_CRIU_MODE_DUMP;
++		fpriv->criu_cookie = get_random_u64();
++		if (!fpriv->criu_cookie)
++			fpriv->criu_cookie = 1;
++		args->cookie = fpriv->criu_cookie;
++		break;
++	case I915_CRIU_SESSION_RESTORE_BEGIN:
++		if (!capable(CAP_SYS_ADMIN)) {
++			ret = -EPERM;
++			break;
++		}
++		if (args->target_pid ||
++		    fpriv->criu_mode != I915_CRIU_MODE_NONE) {
++			ret = -EINVAL;
++			break;
++		}
++		fpriv->criu_reset_epoch = i915_criu_reset_epoch(fpriv->i915);
++		fpriv->criu_mode = I915_CRIU_MODE_RESTORE;
++		fpriv->criu_restore_default_vm = false;
++		fpriv->criu_cookie = get_random_u64();
++		if (!fpriv->criu_cookie)
++			fpriv->criu_cookie = 1;
++		args->cookie = fpriv->criu_cookie;
++		break;
++	case I915_CRIU_SESSION_COMMIT:
++		if (!args->cookie || args->cookie != fpriv->criu_cookie ||
++		    fpriv->criu_mode == I915_CRIU_MODE_NONE) {
++			ret = -ESTALE;
++			break;
++		}
++		if (fpriv->criu_reset_epoch !=
++		    i915_criu_reset_epoch(fpriv->i915)) {
++			ret = -EIO;
++			break;
++		}
++		xa_destroy(&fpriv->criu_restore_handles);
++		xa_init(&fpriv->criu_restore_handles);
++		xa_destroy(&fpriv->criu_restore_syncobjs);
++		xa_init(&fpriv->criu_restore_syncobjs);
++		xa_destroy(&fpriv->criu_restore_contexts);
++		xa_init(&fpriv->criu_restore_contexts);
++		{
++			unsigned long index;
++			struct i915_vma *vma;
++
++			xa_for_each(&fpriv->criu_restore_bindings, index, vma) {
++				xa_erase(&fpriv->criu_restore_bindings, index);
++				i915_vma_put(vma);
++			}
++		}
++		xa_destroy(&fpriv->criu_restore_bindings);
++		xa_init_flags(&fpriv->criu_restore_bindings, XA_FLAGS_ALLOC);
++		fpriv->criu_restore_default_vm = false;
++		xa_destroy(&fpriv->criu_restore_vms);
++		xa_init(&fpriv->criu_restore_vms);
++		xa_destroy(&fpriv->criu_restore_fbs);
++		xa_init(&fpriv->criu_restore_fbs);
++		xa_destroy(&fpriv->criu_restore_blobs);
++		xa_init(&fpriv->criu_restore_blobs);
++		fpriv->criu_mode = I915_CRIU_MODE_NONE;
++		fpriv->criu_cookie = 0;
++		break;
++	case I915_CRIU_SESSION_ABORT:
++		if (!args->cookie || args->cookie != fpriv->criu_cookie ||
++		    fpriv->criu_mode == I915_CRIU_MODE_NONE) {
++			ret = -ESTALE;
++			break;
++		}
++		if (fpriv->criu_mode == I915_CRIU_MODE_RESTORE)
++			abort_restore(file);
++		fpriv->criu_mode = I915_CRIU_MODE_NONE;
++		fpriv->criu_cookie = 0;
++		break;
++	default:
++		ret = -EINVAL;
++	}
++	mutex_unlock(&fpriv->criu_lock);
++
++	return ret;
++}
++
++static int user_gem_handle_count(struct drm_device *dev,
++				 struct drm_gem_object *object, u32 *count)
++{
++	struct drm_framebuffer *fb;
++	u32 framebuffer_refs = 0;
++	unsigned int total;
++
++	mutex_lock(&dev->mode_config.fb_lock);
++	list_for_each_entry(fb, &dev->mode_config.fb_list, head) {
++		for (unsigned int plane = 0;
++		     plane < fb->format->num_planes; plane++) {
++			if (fb->obj[plane] == object &&
++			    fb->internal_flags &
++				    DRM_FRAMEBUFFER_HAS_HANDLE_REF(plane))
++				framebuffer_refs++;
++		}
++	}
++	mutex_unlock(&dev->mode_config.fb_lock);
++
++	mutex_lock(&dev->object_name_lock);
++	total = object->handle_count;
++	mutex_unlock(&dev->object_name_lock);
++	if (framebuffer_refs >= total)
++		return -EUCLEAN;
++	*count = total - framebuffer_refs;
++	return 0;
++}
++
++int i915_criu_object_ioctl(struct drm_device *dev, void *data,
++			   struct drm_file *file)
++{
++	struct drm_i915_criu_object *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	struct drm_i915_gem_object *obj;
++	int ret = 0;
++
++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
++	    args->reserved)
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_OBJECT_QUERY) {
++		struct drm_i915_gem_mmap_offset mmap = {
++			.flags = I915_MMAP_OFFSET_WB,
++		};
++		u32 user_handles;
++		int handle = args->handle ? args->handle + 1 : 1;
++
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		if (args->tiling_mode || args->stride) {
++			ret = -EINVAL;
++			goto out;
++		}
++
++		spin_lock(&file->table_lock);
++		obj = idr_get_next(&file->object_idr, &handle);
++		if (obj)
++			drm_gem_object_get(&obj->base);
++		spin_unlock(&file->table_lock);
++		if (!obj) {
++			ret = -ENOENT;
++			goto out;
++		}
++
++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
++		    i915_gem_object_is_userptr(obj)) {
++			ret = -EOPNOTSUPP;
++			goto put_obj;
++		}
++
++		ret = user_gem_handle_count(dev, &obj->base, &user_handles);
++		if (ret)
++			goto put_obj;
++
++		ret = describe_dma_buf(obj, args);
++		if (ret)
++			goto put_obj;
++
++		ret = i915_gem_object_wait(obj, I915_WAIT_ALL, 5 * HZ);
++		if (ret)
++			goto put_obj;
++
++		i915_gem_object_lock(obj, NULL);
++		args->tiling_mode = i915_gem_object_get_tiling(obj);
++		args->stride = i915_gem_object_get_stride(obj);
++		i915_gem_object_unlock(obj);
++		if ((args->tiling_mode == I915_TILING_NONE) !=
++		    (args->stride == 0)) {
++			ret = -EUCLEAN;
++			goto put_obj;
++		}
++
++		mmap.handle = handle;
++		ret = i915_gem_mmap_offset_ioctl(dev, &mmap, file);
++		if (ret)
++			goto put_obj;
++
++		args->handle = handle;
++		args->object_id = checkpoint_object_id(obj);
++		args->size = obj->base.size;
++		args->flags = I915_CRIU_OBJECT_SHMEM;
++		args->mmap_offset = mmap.offset;
++		args->mmap_type = I915_MMAP_OFFSET_WB;
++		args->handle_count = user_handles;
++		args->sharing_flags =
++			obj->base.dma_buf || user_handles > 1 ?
++				I915_CRIU_OBJECT_SHARED :
++				0;
++put_obj:
++		i915_gem_object_put(obj);
++	} else if (args->op == I915_CRIU_OBJECT_CREATE ||
++		   args->op == I915_CRIU_OBJECT_IMPORT) {
++		struct drm_i915_gem_create create = { .size = args->size };
++		u32 handle = args->handle;
++		void *old;
++
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (args->flags != I915_CRIU_OBJECT_SHMEM || !args->object_id ||
++		    !args->size || !args->handle_count ||
++		    args->sharing_flags & ~I915_CRIU_OBJECT_SHARED ||
++		    args->tiling_mode > I915_TILING_Y ||
++		    ((args->tiling_mode == I915_TILING_NONE) !=
++		     (args->stride == 0))) {
++			ret = -EINVAL;
++			goto out;
++		}
++
++		if (args->op == I915_CRIU_OBJECT_CREATE) {
++			ret = i915_gem_create_ioctl(dev, &create, file);
++			if (ret)
++				goto out;
++			handle = create.handle;
++		} else if (!handle) {
++			ret = -EINVAL;
++			goto out;
++		}
++
++		obj = i915_gem_object_lookup(file, handle);
++		if (!obj) {
++			ret = -ENOENT;
++			goto delete_handle;
++		}
++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
++		    i915_gem_object_is_userptr(obj) ||
++		    obj->base.size != args->size) {
++			ret = -EINVAL;
++			goto put_restore_obj;
++		}
++
++		if (args->op == I915_CRIU_OBJECT_CREATE &&
++		    args->tiling_mode != I915_TILING_NONE) {
++			struct drm_i915_gem_set_tiling set_tiling = {
++				.handle = handle,
++				.tiling_mode = args->tiling_mode,
++				.stride = args->stride,
++			};
++
++			ret = i915_gem_set_tiling_ioctl(dev, &set_tiling, file);
++			if (!ret &&
++			    (set_tiling.tiling_mode != args->tiling_mode ||
++			     set_tiling.stride != args->stride))
++				ret = -EOPNOTSUPP;
++		} else {
++			i915_gem_object_lock(obj, NULL);
++			if (i915_gem_object_get_tiling(obj) != args->tiling_mode ||
++			    i915_gem_object_get_stride(obj) != args->stride)
++				ret = -EINVAL;
++			i915_gem_object_unlock(obj);
++		}
++		if (ret)
++			goto put_restore_obj;
++
++		mutex_lock(&i915_criu_object_id_lock);
++		if (obj->criu_id && obj->criu_id != args->object_id)
++			ret = -EEXIST;
++		else {
++			obj->criu_id = args->object_id;
++			if (atomic64_read(&i915_criu_next_object_id) <
++			    args->object_id)
++				atomic64_set(&i915_criu_next_object_id,
++					     args->object_id);
++		}
++		mutex_unlock(&i915_criu_object_id_lock);
++		if (ret)
++			goto put_restore_obj;
++
++		old = xa_store(&fpriv->criu_restore_handles, args->object_id,
++			       xa_mk_value(handle), GFP_KERNEL);
++		if (xa_is_err(old) || old) {
++			ret = old ? -EEXIST : xa_err(old);
++			goto put_restore_obj;
++		}
++		i915_gem_object_put(obj);
++		args->handle = handle;
++		args->mmap_type = I915_MMAP_OFFSET_WB;
++		args->mmap_offset = 0;
++		goto out;
++
++put_restore_obj:
++		i915_gem_object_put(obj);
++delete_handle:
++		drm_gem_handle_delete(file, handle);
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++static bool file_has_gem_object(struct drm_file *file,
++				struct drm_i915_gem_object *target)
++{
++	struct drm_i915_gem_object *obj;
++	int handle;
++	bool found = false;
++
++	spin_lock(&file->table_lock);
++	idr_for_each_entry(&file->object_idr, obj, handle) {
++		if (obj == target) {
++			found = true;
++			break;
++		}
++	}
++	spin_unlock(&file->table_lock);
++	return found;
++}
++
++int i915_criu_mapping_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file)
++{
++	struct drm_i915_criu_mapping *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	int ret;
++
++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_MAPPING_QUERY) {
++		struct drm_vma_offset_node *node;
++		struct drm_i915_gem_object *obj = NULL;
++		struct i915_mmap_offset *mmo = NULL;
++		bool node_found;
++
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		if (!args->offset || !IS_ALIGNED(args->offset, PAGE_SIZE) ||
++		    args->object_id || args->size || args->mmap_type) {
++			ret = -EINVAL;
++			goto out;
++		}
++
++		rcu_read_lock();
++		drm_vma_offset_lock_lookup(dev->vma_offset_manager);
++		node = drm_vma_offset_lookup_locked(dev->vma_offset_manager,
++						    args->offset >> PAGE_SHIFT, 1);
++		node_found = node != NULL;
++		if (node && !node->driver_private &&
++		    drm_vma_node_is_allowed(node, file)) {
++			mmo = container_of(node, struct i915_mmap_offset, vma_node);
++			obj = i915_gem_object_get_rcu(mmo->obj);
++		}
++		drm_vma_offset_unlock_lookup(dev->vma_offset_manager);
++		rcu_read_unlock();
++		if (!obj) {
++			ret = node_found ? -EACCES : -ENOENT;
++			goto out;
++		}
++		if (!file_has_gem_object(file, obj) ||
++		    !i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
++		    i915_gem_object_is_userptr(obj)) {
++			ret = -EXDEV;
++			goto put_obj;
++		}
++		args->object_id = checkpoint_object_id(obj);
++		args->offset = drm_vma_node_offset_addr(&mmo->vma_node);
++		args->size = drm_vma_node_size(&mmo->vma_node) << PAGE_SHIFT;
++		args->mmap_type = mmo->mmap_type;
++		ret = 0;
++put_obj:
++		i915_gem_object_put(obj);
++	} else if (args->op == I915_CRIU_MAPPING_CREATE) {
++		struct drm_i915_gem_mmap_offset create = {
++			.flags = args->mmap_type,
++		};
++		void *entry;
++
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (!args->object_id || args->offset || !args->size ||
++		    args->mmap_type > I915_MMAP_OFFSET_FIXED) {
++			ret = -EINVAL;
++			goto out;
++		}
++		entry = xa_load(&fpriv->criu_restore_handles, args->object_id);
++		if (!entry) {
++			ret = -ENOENT;
++			goto out;
++		}
++		create.handle = xa_to_value(entry);
++		ret = i915_gem_mmap_offset_ioctl(dev, &create, file);
++		if (!ret) {
++			struct drm_i915_gem_object *obj =
++				i915_gem_object_lookup(file, create.handle);
++
++			if (!obj)
++				ret = -ENOENT;
++			else if (obj->base.size != args->size)
++				ret = -EXDEV;
++			else
++				args->offset = create.offset;
++			if (obj)
++				i915_gem_object_put(obj);
++		}
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++int i915_criu_data_ioctl(struct drm_device *dev, void *data,
++			 struct drm_file *file)
++{
++	struct drm_i915_criu_data *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	int ret;
++
++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)) ||
++	    !args->size || !args->data_ptr)
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_DATA_READ) {
++		struct drm_i915_gem_pread pread = {
++			.handle = args->handle,
++			.offset = args->offset,
++			.size = args->size,
++			.data_ptr = args->data_ptr,
++		};
++
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (!ret)
++			ret = i915_gem_pread_ioctl(dev, &pread, file);
++	} else if (args->op == I915_CRIU_DATA_WRITE) {
++		struct drm_i915_gem_pwrite pwrite = {
++			.handle = args->handle,
++			.offset = args->offset,
++			.size = args->size,
++			.data_ptr = args->data_ptr,
++		};
++
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (!ret)
++			ret = i915_gem_pwrite_ioctl(dev, &pwrite, file);
++	} else {
++		ret = -EINVAL;
++	}
++	mutex_unlock(&fpriv->criu_lock);
++
++	return ret;
++}
++
++int i915_criu_syncobj_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file)
++{
++	struct drm_i915_criu_syncobj *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	struct drm_syncobj *syncobj;
++	unsigned long index;
++	int ret;
++
++	(void)dev;
++	if (args->version != I915_CRIU_ABI_VERSION ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_SYNCOBJ_QUERY) {
++		if (args->flags || args->point) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++
++		index = args->handle;
++		syncobj = xa_find_after(&file->syncobj_xa, &index, ULONG_MAX,
++					XA_PRESENT);
++		if (!syncobj) {
++			ret = -ENOENT;
++			goto out;
++		}
++		drm_syncobj_get(syncobj);
++		ret = describe_syncobj(syncobj, &args->flags, &args->point);
++		drm_syncobj_put(syncobj);
++		if (!ret)
++			args->handle = index;
++	} else if (args->op == I915_CRIU_SYNCOBJ_CREATE) {
++		u32 create_flags = 0;
++		u32 handle;
++		void *old;
++
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (!args->handle || !args->flags ||
++		    (args->flags & (args->flags - 1)) ||
++		    (args->flags != I915_CRIU_SYNCOBJ_EMPTY &&
++		     args->flags != I915_CRIU_SYNCOBJ_BINARY_SIGNALED &&
++		     args->flags != I915_CRIU_SYNCOBJ_TIMELINE) ||
++		    (args->flags != I915_CRIU_SYNCOBJ_TIMELINE &&
++		     args->point) ||
++		    (args->flags == I915_CRIU_SYNCOBJ_TIMELINE &&
++		     !args->point)) {
++			ret = -EINVAL;
++			goto out;
++		}
++		if (args->flags == I915_CRIU_SYNCOBJ_BINARY_SIGNALED)
++			create_flags = DRM_SYNCOBJ_CREATE_SIGNALED;
++		ret = drm_syncobj_create(&syncobj, create_flags, NULL);
++		if (ret)
++			goto out;
++		ret = drm_syncobj_get_handle(file, syncobj, &handle);
++		drm_syncobj_put(syncobj);
++		if (ret)
++			goto out;
++		if (handle != args->handle) {
++			syncobj = xa_erase(&file->syncobj_xa, handle);
++			if (syncobj)
++				drm_syncobj_put(syncobj);
++			ret = -ERANGE;
++			goto out;
++		}
++		old = xa_store(&fpriv->criu_restore_syncobjs, handle,
++			       xa_mk_value(handle), GFP_KERNEL);
++		if (xa_is_err(old) || old) {
++			syncobj = xa_erase(&file->syncobj_xa, handle);
++			if (syncobj)
++				drm_syncobj_put(syncobj);
++			ret = old ? -EEXIST : xa_err(old);
++			goto out;
++		}
++		ret = 0;
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++static int query_sync_file(struct drm_file *file,
++			   struct drm_i915_criu_sync_file *args)
++{
++	struct file *sync_file_file;
++	struct dma_fence *fence;
++	struct drm_syncobj *syncobj;
++	unsigned long index;
++	long refcount;
++	u32 matched_handle = 0;
++	int ret = 0;
++
++	if (args->fd < 0 || args->handle || args->flags || args->fd_refcount ||
++	    args->point)
++		return -EINVAL;
++
++	/* fget() supplies one known temporary reference, excluded from the ABI. */
++	sync_file_file = fget(args->fd);
++	if (!sync_file_file)
++		return -EBADF;
++	fence = sync_file_get_fence(args->fd);
++	if (!fence) {
++		ret = -EINVAL;
++		goto out_file;
++	}
++	if (dma_fence_get_status(fence) != 1 || to_dma_fence_chain(fence)) {
++		ret = -EOPNOTSUPP;
++		goto out_fence;
++	}
++
++	xa_for_each(&file->syncobj_xa, index, syncobj) {
++		struct dma_fence *candidate = drm_syncobj_fence_get(syncobj);
++
++		if (candidate == fence) {
++			u32 flags;
++			u64 point;
++
++			ret = describe_syncobj(syncobj, &flags, &point);
++			if (!ret &&
++			    (flags != I915_CRIU_SYNCOBJ_BINARY_SIGNALED ||
++			     point))
++				ret = -EOPNOTSUPP;
++			if (!ret && matched_handle)
++				ret = -EXDEV;
++			if (!ret)
++				matched_handle = index;
++		}
++		dma_fence_put(candidate);
++		if (ret)
++			goto out_fence;
++	}
++	if (!matched_handle) {
++		ret = -EXDEV;
++		goto out_fence;
++	}
++	refcount = file_count(sync_file_file) - 1;
++	if (refcount <= 0 || refcount > U32_MAX) {
++		ret = -EOVERFLOW;
++		goto out_fence;
++	}
++	args->handle = matched_handle;
++	args->flags = I915_CRIU_SYNC_FILE_BINARY_SIGNALED;
++	args->fd_refcount = refcount;
++
++out_fence:
++	dma_fence_put(fence);
++out_file:
++	fput(sync_file_file);
++	return ret;
++}
++
++static int create_sync_file(struct drm_file *file,
++			    struct drm_i915_criu_sync_file *args)
++{
++	struct drm_syncobj *syncobj;
++	struct dma_fence *fence;
++	struct sync_file *sync_file;
++	int fd;
++	int ret = 0;
++
++	if (args->fd != -1 || !args->handle ||
++	    args->flags != I915_CRIU_SYNC_FILE_BINARY_SIGNALED ||
++	    args->fd_refcount || args->point)
++		return -EINVAL;
++	syncobj = drm_syncobj_find(file, args->handle);
++	if (!syncobj)
++		return -ENOENT;
++	fence = drm_syncobj_fence_get(syncobj);
++	drm_syncobj_put(syncobj);
++	if (!fence)
++		return -EINVAL;
++	if (dma_fence_get_status(fence) != 1 || to_dma_fence_chain(fence)) {
++		ret = -EOPNOTSUPP;
++		goto out_fence;
++	}
++	fd = get_unused_fd_flags(O_CLOEXEC);
++	if (fd < 0) {
++		ret = fd;
++		goto out_fence;
++	}
++	sync_file = sync_file_create(fence);
++	if (!sync_file) {
++		put_unused_fd(fd);
++		ret = -ENOMEM;
++		goto out_fence;
++	}
++	fd_install(fd, sync_file->file);
++	args->fd = fd;
++
++out_fence:
++	dma_fence_put(fence);
++	return ret;
++}
++
++int i915_criu_sync_file_ioctl(struct drm_device *dev, void *data,
++			      struct drm_file *file)
++{
++	struct drm_i915_criu_sync_file *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	int ret;
++
++	(void)dev;
++	if (args->version != I915_CRIU_ABI_VERSION ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_SYNC_FILE_QUERY) {
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (!ret)
++			ret = query_sync_file(file, args);
++	} else if (args->op == I915_CRIU_SYNC_FILE_CREATE) {
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (!ret)
++			ret = create_sync_file(file, args);
++	} else {
++		ret = -EINVAL;
++	}
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++static u32 checkpoint_file_flags(struct drm_file *file)
++{
++	u32 flags = 0;
++
++	if (drm_is_primary_client(file))
++		flags |= I915_CRIU_FILE_PRIMARY;
++	else if (drm_is_render_client(file))
++		flags |= I915_CRIU_FILE_RENDER;
++	if (file->authenticated)
++		flags |= I915_CRIU_FILE_AUTHENTICATED;
++	if (drm_is_current_master(file))
++		flags |= I915_CRIU_FILE_MASTER;
++	if (file->atomic)
++		flags |= I915_CRIU_FILE_ATOMIC;
++	if (file->universal_planes)
++		flags |= I915_CRIU_FILE_UNIVERSAL_PLANES;
++	if (file->aspect_ratio_allowed)
++		flags |= I915_CRIU_FILE_ASPECT_RATIO;
++	if (file->stereo_allowed)
++		flags |= I915_CRIU_FILE_STEREO;
++	if (file->writeback_connectors)
++		flags |= I915_CRIU_FILE_WRITEBACK_CONNECTORS;
++	return flags;
++}
++
++static int validate_kms_file_state(struct drm_device *dev,
++				   struct drm_file *file)
++{
++	unsigned long irqflags;
++	bool has_events;
++	bool has_leases = false;
++
++	spin_lock_irqsave(&dev->event_lock, irqflags);
++	has_events = !list_empty(&file->pending_event_list) ||
++		     !list_empty(&file->event_list);
++	spin_unlock_irqrestore(&dev->event_lock, irqflags);
++	if (has_events)
++		return -EBUSY;
++
++	mutex_lock(&dev->mode_config.idr_mutex);
++	if (file->master)
++		has_leases = file->master->lessor ||
++			     !list_empty(&file->master->lessees);
++	mutex_unlock(&dev->mode_config.idr_mutex);
++	return has_leases ? -EOPNOTSUPP : 0;
++}
++
++int i915_criu_file_ioctl(struct drm_device *dev, void *data,
++			 struct drm_file *file)
++{
++	const u32 supported =
++		I915_CRIU_FILE_PRIMARY | I915_CRIU_FILE_RENDER |
++		I915_CRIU_FILE_AUTHENTICATED | I915_CRIU_FILE_MASTER |
++		I915_CRIU_FILE_ATOMIC | I915_CRIU_FILE_UNIVERSAL_PLANES |
++		I915_CRIU_FILE_ASPECT_RATIO | I915_CRIU_FILE_STEREO |
++		I915_CRIU_FILE_WRITEBACK_CONNECTORS;
++	struct drm_i915_criu_file *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	struct pci_dev *pdev = to_pci_dev(dev->dev);
++	u32 actual;
++	int ret;
++
++	if (args->version != I915_CRIU_ABI_VERSION ||
++	    args->flags & ~supported ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	actual = checkpoint_file_flags(file);
++	if (args->op == I915_CRIU_FILE_QUERY) {
++		if (args->flags || args->vendor_id || args->device_id ||
++		    args->subsystem_vendor_id || args->subsystem_device_id ||
++		    args->revision) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (!ret)
++			ret = validate_kms_file_state(dev, file);
++		if (!ret) {
++			args->flags = actual;
++			args->vendor_id = pdev->vendor;
++			args->device_id = pdev->device;
++			args->subsystem_vendor_id = pdev->subsystem_vendor;
++			args->subsystem_device_id = pdev->subsystem_device;
++			args->revision = pdev->revision;
++		}
++	} else if (args->op == I915_CRIU_FILE_RESTORE) {
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (!ret &&
++		    (args->flags != actual || args->vendor_id != pdev->vendor ||
++		     args->device_id != pdev->device ||
++		     args->subsystem_vendor_id != pdev->subsystem_vendor ||
++		     args->subsystem_device_id != pdev->subsystem_device ||
++		     args->revision != pdev->revision))
++			ret = -EXDEV;
++		if (!ret)
++			ret = validate_kms_file_state(dev, file);
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++static int reassign_mode_object_id(struct drm_device *dev,
++				   struct drm_mode_object *object, u32 target)
++{
++	int ret;
++
++	if (!target || target == U32_MAX)
++		return -EINVAL;
++	mutex_lock(&dev->mode_config.idr_mutex);
++	if (object->id == target) {
++		ret = 0;
++		goto out;
++	}
++	if (idr_find(&dev->mode_config.object_idr, target)) {
++		ret = -EEXIST;
++		goto out;
++	}
++	ret = idr_alloc(&dev->mode_config.object_idr, object, target,
++			target + 1, GFP_KERNEL);
++	if (ret == target) {
++		idr_remove(&dev->mode_config.object_idr, object->id);
++		object->id = target;
++		ret = 0;
++	} else if (ret >= 0) {
++		idr_remove(&dev->mode_config.object_idr, ret);
++		ret = -ERANGE;
++	}
++out:
++	mutex_unlock(&dev->mode_config.idr_mutex);
++	return ret;
++}
++
++static struct drm_framebuffer *next_file_framebuffer(struct drm_file *file,
++						     u32 cursor)
++{
++	struct drm_framebuffer *fb;
++	struct drm_framebuffer *found = NULL;
++
++	mutex_lock(&file->fbs_lock);
++	list_for_each_entry(fb, &file->fbs, filp_head) {
++		if (fb->base.id <= cursor ||
++		    (found && found->base.id < fb->base.id))
++			continue;
++		found = fb;
++	}
++	if (found)
++		drm_framebuffer_get(found);
++	mutex_unlock(&file->fbs_lock);
++	return found;
++}
++
++static u32 checkpoint_framebuffer_flag(u64 modifier)
++{
++	switch (modifier) {
++	case DRM_FORMAT_MOD_LINEAR:
++		return I915_CRIU_FRAMEBUFFER_LINEAR;
++	case I915_FORMAT_MOD_X_TILED:
++		return I915_CRIU_FRAMEBUFFER_X_TILED;
++	case I915_FORMAT_MOD_Y_TILED:
++		return I915_CRIU_FRAMEBUFFER_Y_TILED;
++	default:
++		return 0;
++	}
++}
++
++static bool checkpoint_framebuffer_tiling(u64 modifier, u32 pitch,
++					  u32 tiling, u32 stride)
++{
++	if (tiling == I915_TILING_NONE)
++		return !stride;
++	if (stride != pitch)
++		return false;
++	return (modifier == I915_FORMAT_MOD_X_TILED &&
++		tiling == I915_TILING_X) ||
++	       (modifier == I915_FORMAT_MOD_Y_TILED &&
++		tiling == I915_TILING_Y);
++}
++
++int i915_criu_framebuffer_ioctl(struct drm_device *dev, void *data,
++				struct drm_file *file)
++{
++	struct drm_i915_criu_framebuffer *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	struct drm_framebuffer *fb;
++	int ret;
++
++	if (args->version != I915_CRIU_ABI_VERSION || args->failure_reason ||
++	    args->pad || args->reserved)
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_FRAMEBUFFER_QUERY) {
++		struct drm_i915_gem_object *obj;
++
++		if (args->flags || args->object_id || args->width ||
++		    args->height || args->pixel_format || args->pitch ||
++		    args->offset || args->num_planes || args->modifier ||
++		    args->object_tiling || args->object_stride) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		fb = next_file_framebuffer(file, args->id);
++		if (!fb) {
++			ret = -ENOENT;
++			goto out;
++		}
++		args->id = fb->base.id;
++		args->width = fb->width;
++		args->height = fb->height;
++		args->num_planes = fb->format ? fb->format->num_planes : 0;
++		args->pixel_format = fb->format ? fb->format->format : 0;
++		args->pitch = fb->pitches[0];
++		args->offset = fb->offsets[0];
++		args->modifier = fb->modifier;
++		if (!fb->format || fb->format->num_planes != 1 || !fb->obj[0] ||
++		    fb->offsets[0]) {
++			args->failure_reason =
++				I915_CRIU_FRAMEBUFFER_FAILURE_LAYOUT;
++			ret = -EOPNOTSUPP;
++			goto put_fb;
++		}
++		args->flags = checkpoint_framebuffer_flag(fb->modifier);
++		if (!args->flags) {
++			args->failure_reason =
++				I915_CRIU_FRAMEBUFFER_FAILURE_MODIFIER;
++			ret = -EOPNOTSUPP;
++			goto put_fb;
++		}
++		if (fb->format->format != DRM_FORMAT_XRGB8888) {
++			args->failure_reason =
++				I915_CRIU_FRAMEBUFFER_FAILURE_FORMAT;
++			ret = -EOPNOTSUPP;
++			goto put_fb;
++		}
++		obj = to_intel_bo(fb->obj[0]);
++		args->object_id = checkpoint_object_id(obj);
++		i915_gem_object_lock(obj, NULL);
++		args->object_tiling = i915_gem_object_get_tiling(obj);
++		args->object_stride = i915_gem_object_get_stride(obj);
++		i915_gem_object_unlock(obj);
++		if (!i915_gem_object_is_shmem(obj) || obj->base.import_attach ||
++		    i915_gem_object_is_userptr(obj)) {
++			args->failure_reason =
++				I915_CRIU_FRAMEBUFFER_FAILURE_OBJECT;
++			ret = -EOPNOTSUPP;
++			goto put_fb;
++		}
++		if (!checkpoint_framebuffer_tiling(args->modifier, args->pitch,
++					   args->object_tiling,
++					   args->object_stride)) {
++			args->failure_reason =
++				I915_CRIU_FRAMEBUFFER_FAILURE_TILING;
++			ret = -EOPNOTSUPP;
++			goto put_fb;
++		}
++		ret = 0;
++put_fb:
++		drm_framebuffer_put(fb);
++	} else if (args->op == I915_CRIU_FRAMEBUFFER_CREATE) {
++		const struct drm_format_info *info;
++		struct drm_mode_fb_cmd2 command = {
++			.fb_id = 0,
++			.flags = args->modifier == DRM_FORMAT_MOD_LINEAR ?
++				0 : DRM_MODE_FB_MODIFIERS,
++			.width = args->width,
++			.height = args->height,
++			.pixel_format = args->pixel_format,
++			.pitches = { args->pitch },
++			.offsets = { args->offset },
++			.modifier = { args->modifier },
++		};
++		struct drm_i915_gem_object *obj;
++		void *entry;
++		u32 handle;
++
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (!drm_is_primary_client(file)) {
++			ret = -EOPNOTSUPP;
++			goto out;
++		}
++		if (!args->id ||
++		    args->flags != checkpoint_framebuffer_flag(args->modifier) ||
++		    !args->flags || !args->object_id || !args->width ||
++		    !args->height || args->num_planes != 1 ||
++		    args->pixel_format != DRM_FORMAT_XRGB8888 || !args->pitch ||
++		    args->offset || args->object_tiling || args->object_stride) {
++			ret = -EINVAL;
++			goto out;
++		}
++		entry = xa_load(&fpriv->criu_restore_handles, args->object_id);
++		if (!entry) {
++			ret = -ENOENT;
++			goto out;
++		}
++		handle = xa_to_value(entry);
++		obj = i915_gem_object_lookup(file, handle);
++		if (!obj) {
++			ret = -ENOENT;
++			goto out;
++		}
++		i915_gem_object_lock(obj, NULL);
++		ret = checkpoint_framebuffer_tiling(
++			args->modifier, args->pitch,
++			i915_gem_object_get_tiling(obj),
++			i915_gem_object_get_stride(obj)) ? 0 : -EOPNOTSUPP;
++		i915_gem_object_unlock(obj);
++		i915_gem_object_put(obj);
++		if (ret)
++			goto out;
++		command.handles[0] = handle;
++		if (command.width < dev->mode_config.min_width ||
++		    command.width > dev->mode_config.max_width ||
++		    command.height < dev->mode_config.min_height ||
++		    command.height > dev->mode_config.max_height ||
++		    command.pitches[0] < command.width * 4) {
++			ret = -EINVAL;
++			goto out;
++		}
++		info = drm_get_format_info(dev, command.pixel_format,
++					   command.modifier[0]);
++		fb = intel_user_framebuffer_create(dev, file, info, &command);
++		if (IS_ERR(fb)) {
++			ret = PTR_ERR(fb);
++			goto out;
++		}
++		ret = reassign_mode_object_id(dev, &fb->base, args->id);
++		if (ret)
++			goto put_created_fb;
++		mutex_lock(&file->fbs_lock);
++		list_add_tail(&fb->filp_head, &file->fbs);
++		mutex_unlock(&file->fbs_lock);
++		entry = xa_store(&fpriv->criu_restore_fbs, args->id, fb,
++				 GFP_KERNEL);
++		if (xa_is_err(entry) || entry) {
++			mutex_lock(&file->fbs_lock);
++			list_del_init(&fb->filp_head);
++			mutex_unlock(&file->fbs_lock);
++			ret = entry ? -EEXIST : xa_err(entry);
++			goto put_created_fb;
++		}
++		ret = 0;
++		goto out;
++put_created_fb:
++		drm_framebuffer_put(fb);
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++static struct drm_property_blob *
++next_file_blob(struct drm_device *dev, struct drm_file *file, u32 cursor)
++{
++	struct drm_property_blob *blob;
++	struct drm_property_blob *found = NULL;
++
++	mutex_lock(&dev->mode_config.blob_lock);
++	list_for_each_entry(blob, &file->blobs, head_file) {
++		if (blob->base.id <= cursor ||
++		    (found && found->base.id < blob->base.id))
++			continue;
++		found = blob;
++	}
++	if (found)
++		drm_property_blob_get(found);
++	mutex_unlock(&dev->mode_config.blob_lock);
++	return found;
++}
++
++static struct drm_property_blob *file_blob_by_id(struct drm_device *dev,
++						 struct drm_file *file, u32 id)
++{
++	struct drm_property_blob *blob;
++	struct drm_property_blob *found = NULL;
++
++	mutex_lock(&dev->mode_config.blob_lock);
++	list_for_each_entry(blob, &file->blobs, head_file) {
++		if (blob->base.id != id)
++			continue;
++		found = drm_property_blob_get(blob);
++		break;
++	}
++	mutex_unlock(&dev->mode_config.blob_lock);
++	return found;
++}
++
++int i915_criu_blob_ioctl(struct drm_device *dev, void *data,
++			 struct drm_file *file)
++{
++	struct drm_i915_criu_blob *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	struct drm_property_blob *blob;
++	int ret;
++
++	if (args->version != I915_CRIU_ABI_VERSION ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_BLOB_QUERY) {
++		if (args->length || args->data_ptr) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		blob = next_file_blob(dev, file, args->id);
++		if (!blob) {
++			ret = -ENOENT;
++			goto out;
++		}
++		args->id = blob->base.id;
++		args->length = blob->length;
++		drm_property_blob_put(blob);
++		ret = 0;
++	} else if (args->op == I915_CRIU_BLOB_READ) {
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		if (!args->id || !args->length || !args->data_ptr) {
++			ret = -EINVAL;
++			goto out;
++		}
++		blob = file_blob_by_id(dev, file, args->id);
++		if (!blob) {
++			ret = -ENOENT;
++			goto out;
++		}
++		if (blob->length != args->length)
++			ret = -EINVAL;
++		else if (copy_to_user(u64_to_user_ptr(args->data_ptr),
++				      blob->data, blob->length))
++			ret = -EFAULT;
++		else
++			ret = 0;
++		drm_property_blob_put(blob);
++	} else if (args->op == I915_CRIU_BLOB_CREATE) {
++		void *entry;
++
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (!drm_is_primary_client(file)) {
++			ret = -EOPNOTSUPP;
++			goto out;
++		}
++		if (!args->id || !args->length || args->length > SZ_1M ||
++		    !args->data_ptr) {
++			ret = -EINVAL;
++			goto out;
++		}
++		blob = drm_property_create_blob(dev, args->length, NULL);
++		if (IS_ERR(blob)) {
++			ret = PTR_ERR(blob);
++			goto out;
++		}
++		if (copy_from_user(blob->data, u64_to_user_ptr(args->data_ptr),
++				   args->length)) {
++			ret = -EFAULT;
++			goto put_created_blob;
++		}
++		ret = reassign_mode_object_id(dev, &blob->base, args->id);
++		if (ret)
++			goto put_created_blob;
++		mutex_lock(&dev->mode_config.blob_lock);
++		list_add_tail(&blob->head_file, &file->blobs);
++		mutex_unlock(&dev->mode_config.blob_lock);
++		entry = xa_store(&fpriv->criu_restore_blobs, args->id, blob,
++				 GFP_KERNEL);
++		if (xa_is_err(entry) || entry) {
++			mutex_lock(&dev->mode_config.blob_lock);
++			list_del_init(&blob->head_file);
++			mutex_unlock(&dev->mode_config.blob_lock);
++			ret = entry ? -EEXIST : xa_err(entry);
++			goto put_created_blob;
++		}
++		ret = 0;
++		goto out;
++put_created_blob:
++		drm_property_blob_put(blob);
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++static int restore_context_param(struct drm_device *dev, struct drm_file *file,
++				 u32 context_id, u64 param, u64 value)
++{
++	struct drm_i915_gem_context_param context_param = {
++		.ctx_id = context_id,
++		.param = param,
++		.value = value,
++	};
++
++	return i915_gem_context_setparam_ioctl(dev, &context_param, file);
++}
++
++static int copy_context_engines_to_user(
++	struct drm_i915_criu_context *args,
++	struct i915_gem_context *ctx,
++	const struct i915_gem_proto_context *pc)
++{
++	struct drm_i915_criu_engine image[I915_CRIU_MAX_CONTEXT_ENGINES];
++	u32 capacity = args->engine_count;
++	u32 count = 0;
++	unsigned int i;
++	int ret = 0;
++
++	if (ctx && test_bit(CONTEXT_USER_ENGINES, &ctx->flags)) {
++		struct i915_gem_engines *engines =
++			i915_gem_context_lock_engines(ctx);
++
++		count = engines ? engines->num_engines : 0;
++		if (count > I915_CRIU_MAX_CONTEXT_ENGINES) {
++			ret = -E2BIG;
++			goto out_active;
++		}
++		for (i = 0; i < count; i++) {
++			struct intel_context *ce = engines->engines[i];
++
++			if (!ce) {
++				image[i].engine_class = (u16)I915_ENGINE_CLASS_INVALID;
++				image[i].engine_instance =
++					(u16)I915_ENGINE_CLASS_INVALID_NONE;
++			} else {
++				image[i].engine_class = ce->engine->uabi_class;
++				image[i].engine_instance = ce->engine->uabi_instance;
++			}
++		}
++out_active:
++		i915_gem_context_unlock_engines(ctx);
++		if (ret)
++			return ret;
++	} else if (pc && pc->num_user_engines >= 0) {
++		count = pc->num_user_engines;
++		if (count > I915_CRIU_MAX_CONTEXT_ENGINES)
++			return -E2BIG;
++		for (i = 0; i < count; i++) {
++			const struct i915_gem_proto_engine *engine =
++				&pc->user_engines[i];
++
++			if (engine->type == I915_GEM_ENGINE_TYPE_INVALID) {
++				image[i].engine_class = (u16)I915_ENGINE_CLASS_INVALID;
++				image[i].engine_instance =
++					(u16)I915_ENGINE_CLASS_INVALID_NONE;
++			} else if (engine->type == I915_GEM_ENGINE_TYPE_PHYSICAL) {
++				image[i].engine_class = engine->engine->uabi_class;
++				image[i].engine_instance = engine->engine->uabi_instance;
++			} else {
++				return -EOPNOTSUPP;
++			}
++		}
++	}
++
++	args->engine_count = count;
++	if (!count)
++		return 0;
++	if (capacity < count)
++		return -ENOSPC;
++	if (!args->engines_ptr)
++		return -EINVAL;
++	if (copy_to_user(u64_to_user_ptr(args->engines_ptr), image,
++			 count * sizeof(image[0])))
++		return -EFAULT;
++	return 0;
++}
++
++static int restore_context_engines(
++	struct drm_i915_file_private *fpriv,
++	const struct drm_i915_criu_context *args)
++{
++	struct drm_i915_criu_engine *image;
++	struct i915_gem_proto_engine *engines;
++	struct i915_gem_proto_context *pc;
++	u32 i;
++	int ret = 0;
++
++	if (!(args->flags & I915_CRIU_CONTEXT_USER_ENGINES))
++		return args->engine_count || args->engines_ptr ? -EINVAL : 0;
++	if (args->engine_count > I915_CRIU_MAX_CONTEXT_ENGINES ||
++	    (args->engine_count && !args->engines_ptr))
++		return -EINVAL;
++	image = memdup_user(u64_to_user_ptr(args->engines_ptr),
++			    args->engine_count * sizeof(*image));
++	if (IS_ERR(image))
++		return PTR_ERR(image);
++	engines = kcalloc(args->engine_count, sizeof(*engines), GFP_KERNEL);
++	if (!engines && args->engine_count) {
++		kfree(image);
++		return -ENOMEM;
++	}
++	for (i = 0; i < args->engine_count; i++) {
++		if (image[i].engine_class == (u16)I915_ENGINE_CLASS_INVALID &&
++		    image[i].engine_instance ==
++			    (u16)I915_ENGINE_CLASS_INVALID_NONE) {
++			engines[i].type = I915_GEM_ENGINE_TYPE_INVALID;
++			continue;
++		}
++		if (image[i].engine_class > U8_MAX ||
++		    image[i].engine_instance > U8_MAX) {
++			ret = -ENOENT;
++			goto out_free;
++		}
++		engines[i].engine = intel_engine_lookup_user(
++			fpriv->i915, image[i].engine_class,
++			image[i].engine_instance);
++		if (!engines[i].engine) {
++			ret = -ENOENT;
++			goto out_free;
++		}
++		engines[i].type = I915_GEM_ENGINE_TYPE_PHYSICAL;
++	}
++
++	mutex_lock(&fpriv->proto_context_lock);
++	pc = xa_load(&fpriv->proto_context_xa, args->id);
++	if (!pc)
++		ret = -ENOENT;
++	else if (pc->num_user_engines >= 0 || pc->user_engines)
++		ret = -EEXIST;
++	else {
++		pc->num_user_engines = args->engine_count;
++		pc->user_engines = engines;
++		engines = NULL;
++	}
++	mutex_unlock(&fpriv->proto_context_lock);
++
++out_free:
++	kfree(engines);
++	kfree(image);
++	return ret;
++}
++
++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file)
++{
++	const u32 supported_flags = I915_CRIU_CONTEXT_SINGLE_TIMELINE |
++				    I915_CRIU_CONTEXT_NO_ERROR_CAPTURE |
++				    I915_CRIU_CONTEXT_BANNABLE |
++				    I915_CRIU_CONTEXT_RECOVERABLE |
++				    I915_CRIU_CONTEXT_PERSISTENCE |
++				    I915_CRIU_CONTEXT_USER_ENGINES;
++	struct drm_i915_criu_context *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	unsigned long id;
++	void *old;
++	int ret;
++
++	if (args->version != I915_CRIU_ABI_VERSION || args->pad ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_CONTEXT_QUERY_VM) {
++		struct i915_address_space *vm;
++
++		if (args->flags || args->vm_id || args->priority ||
++		    args->engine_count || args->engines_ptr) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		if (args->id == U32_MAX) {
++			vm = default_context_vm(fpriv);
++			if (vm && context_vm_id(fpriv, vm) == 0) {
++				args->id = 0;
++				args->flags = I915_CRIU_VM_DEFAULT;
++				ret = 0;
++				goto out;
++			}
++			id = 0;
++		} else {
++			id = args->id;
++		}
++		vm = xa_find_after(&fpriv->vm_xa, &id, ULONG_MAX, XA_PRESENT);
++		if (!vm) {
++			ret = -ENOENT;
++			goto out;
++		}
++		args->id = id;
++		args->flags = 0;
++		ret = 0;
++	} else if (args->op == I915_CRIU_CONTEXT_QUERY_CONTEXT) {
++		struct i915_gem_proto_context *pc;
++		struct i915_gem_context *ctx;
++
++		if (args->flags || args->vm_id || args->priority ||
++		    args->id == U32_MAX ||
++		    args->engine_count > I915_CRIU_MAX_CONTEXT_ENGINES ||
++		    (args->engine_count && !args->engines_ptr)) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		id = args->id + 1;
++		mutex_lock(&fpriv->proto_context_lock);
++		ctx = xa_load(&fpriv->context_xa, id);
++		pc = xa_load(&fpriv->proto_context_xa, id);
++		if (ctx) {
++			args->id = id;
++			args->flags = checkpoint_active_context_flags(ctx);
++			args->vm_id = context_vm_id(fpriv, ctx->vm);
++			args->priority = ctx->sched.priority;
++		} else if (pc) {
++			args->id = id;
++			args->flags = checkpoint_proto_context_flags(pc);
++			args->vm_id = context_vm_id(fpriv, pc->vm);
++			args->priority = pc->sched.priority;
++		}
++		ret = ctx || pc ?
++			copy_context_engines_to_user(args, ctx, pc) : -ENOENT;
++		mutex_unlock(&fpriv->proto_context_lock);
++	} else if (args->op == I915_CRIU_CONTEXT_CREATE_VM) {
++		struct drm_i915_gem_vm_control create = { 0 };
++
++		if (args->flags & ~I915_CRIU_VM_DEFAULT || args->vm_id ||
++		    args->priority || args->engine_count || args->engines_ptr ||
++		    (!!args->id == !!(args->flags & I915_CRIU_VM_DEFAULT))) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (!args->id) {
++			struct i915_address_space *vm = default_context_vm(fpriv);
++
++			if (!vm) {
++				ret = -ENOENT;
++				goto out;
++			}
++			mutex_lock(&vm->mutex);
++			ret = !list_empty(&vm->bound_list) ||
++			      !list_empty(&vm->unbound_list) ? -EBUSY : 0;
++			mutex_unlock(&vm->mutex);
++			if (ret)
++				goto out;
++			if (fpriv->criu_restore_default_vm) {
++				ret = -EEXIST;
++				goto out;
++			}
++			fpriv->criu_restore_default_vm = true;
++			goto out;
++		}
++		ret = i915_gem_vm_create_ioctl(dev, &create, file);
++		if (ret)
++			goto out;
++		if (create.vm_id != args->id) {
++			i915_gem_vm_destroy_ioctl(dev, &create, file);
++			ret = -ERANGE;
++			goto out;
++		}
++		old = xa_store(&fpriv->criu_restore_vms, args->id,
++			       xa_mk_value(args->id), GFP_KERNEL);
++		if (xa_is_err(old) || old) {
++			i915_gem_vm_destroy_ioctl(dev, &create, file);
++			ret = old ? -EEXIST : xa_err(old);
++			goto out;
++		}
++		ret = 0;
++	} else if (args->op == I915_CRIU_CONTEXT_CREATE_CONTEXT) {
++		struct drm_i915_gem_context_create_ext create = {
++			.flags =
++				args->flags & I915_CRIU_CONTEXT_SINGLE_TIMELINE ?
++					I915_CONTEXT_CREATE_FLAGS_SINGLE_TIMELINE :
++					0,
++		};
++		struct drm_i915_gem_context_destroy destroy;
++
++		if (!args->id || args->flags & ~supported_flags ||
++		    args->vm_id == U32_MAX ||
++		    args->engine_count > I915_CRIU_MAX_CONTEXT_ENGINES ||
++		    (!(args->flags & I915_CRIU_CONTEXT_USER_ENGINES) &&
++		     (args->engine_count || args->engines_ptr)) ||
++		    (args->flags & I915_CRIU_CONTEXT_USER_ENGINES &&
++		     args->engine_count && !args->engines_ptr)) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (args->vm_id &&
++		    !xa_load(&fpriv->criu_restore_vms, args->vm_id)) {
++			ret = -ENOENT;
++			goto out;
++		}
++		ret = i915_gem_context_create_ioctl(dev, &create, file);
++		if (ret)
++			goto out;
++		if (create.ctx_id != args->id) {
++			ret = -ERANGE;
++			goto destroy_context;
++		}
++		ret = restore_context_engines(fpriv, args);
++		if (ret)
++			goto destroy_context;
++		if (!(args->flags & I915_CRIU_CONTEXT_RECOVERABLE)) {
++			ret = restore_context_param(
++				dev, file, args->id,
++				I915_CONTEXT_PARAM_RECOVERABLE, 0);
++			if (ret)
++				goto destroy_context;
++		}
++		ret = restore_context_param(
++			dev, file, args->id, I915_CONTEXT_PARAM_BANNABLE,
++			!!(args->flags & I915_CRIU_CONTEXT_BANNABLE));
++		if (ret)
++			goto destroy_context;
++		ret = restore_context_param(
++			dev, file, args->id, I915_CONTEXT_PARAM_PERSISTENCE,
++			!!(args->flags & I915_CRIU_CONTEXT_PERSISTENCE));
++		if (ret)
++			goto destroy_context;
++		ret = restore_context_param(
++			dev, file, args->id,
++			I915_CONTEXT_PARAM_NO_ERROR_CAPTURE,
++			!!(args->flags & I915_CRIU_CONTEXT_NO_ERROR_CAPTURE));
++		if (ret)
++			goto destroy_context;
++		ret = restore_context_param(dev, file, args->id,
++					    I915_CONTEXT_PARAM_PRIORITY,
++					    args->priority);
++		if (ret)
++			goto destroy_context;
++		if (args->vm_id) {
++			ret = restore_context_param(dev, file, args->id,
++						    I915_CONTEXT_PARAM_VM,
++						    args->vm_id);
++			if (ret)
++				goto destroy_context;
++		}
++		old = xa_store(&fpriv->criu_restore_contexts, args->id,
++			       xa_mk_value(args->id), GFP_KERNEL);
++		if (xa_is_err(old) || old) {
++			ret = old ? -EEXIST : xa_err(old);
++			goto destroy_context;
++		}
++		ret = 0;
++		goto out;
++
++destroy_context:
++		destroy = (struct drm_i915_gem_context_destroy){
++			.ctx_id = create.ctx_id,
++		};
++		i915_gem_context_destroy_ioctl(dev, &destroy, file);
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
++
++int i915_criu_binding_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file)
++{
++	struct drm_i915_criu_binding *args = data;
++	struct drm_i915_file_private *fpriv = file->driver_priv;
++	struct i915_address_space *vm;
++	struct drm_i915_gem_object *object;
++	struct i915_vma *vma;
++	int ret;
++
++	if (args->version != I915_CRIU_ABI_VERSION ||
++	    memchr_inv(args->reserved, 0, sizeof(args->reserved)))
++		return -EINVAL;
++
++	mutex_lock(&fpriv->criu_lock);
++	if (args->op == I915_CRIU_BINDING_QUERY) {
++		struct i915_vma *candidate = NULL;
++		u64 bound_count = 0;
++		u64 ordinal;
++
++		if (args->flags || args->object_id || args->address ||
++		    args->size || args->cursor == U64_MAX) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie, I915_CRIU_MODE_DUMP);
++		if (ret)
++			goto out;
++		vm = args->vm_id ? xa_load(&fpriv->vm_xa, args->vm_id) :
++				       default_context_vm(fpriv);
++		if (!vm || (!args->vm_id && context_vm_id(fpriv, vm) != 0)) {
++			ret = -ENOENT;
++			goto out;
++		}
++		mutex_lock(&vm->mutex);
++		list_for_each_entry(vma, &vm->bound_list, vm_link)
++			bound_count++;
++		if (args->cursor < bound_count) {
++			u64 previous = 0;
++			bool have_previous = false;
++
++			for (ordinal = 0; ordinal <= args->cursor; ordinal++) {
++				u64 candidate_address = U64_MAX;
++
++				candidate = NULL;
++				list_for_each_entry(vma, &vm->bound_list, vm_link) {
++					u64 address = i915_vma_offset(vma);
++
++					if ((!have_previous || address > previous) &&
++					    address < candidate_address) {
++						candidate = vma;
++						candidate_address = address;
++					}
++				}
++				if (!candidate)
++					break;
++				previous = candidate_address;
++				have_previous = true;
++			}
++			if (candidate) {
++				args->flags = I915_CRIU_BINDING_LOCAL;
++				args->address = i915_vma_offset(candidate);
++			}
++		} else {
++			u64 unbound_ordinal = args->cursor - bound_count;
++			u64 previous_id = 0;
++			bool have_previous = false;
++
++			for (ordinal = 0; ordinal <= unbound_ordinal; ordinal++) {
++				u64 candidate_id = U64_MAX;
++
++				candidate = NULL;
++				list_for_each_entry(vma, &vm->unbound_list, vm_link) {
++					u64 object_id = checkpoint_object_id(vma->obj);
++
++					if ((!have_previous || object_id > previous_id) &&
++					    object_id < candidate_id) {
++						candidate = vma;
++						candidate_id = object_id;
++					}
++				}
++				if (!candidate)
++					break;
++				previous_id = candidate_id;
++				have_previous = true;
++			}
++			if (candidate)
++				args->flags = I915_CRIU_BINDING_UNBOUND;
++		}
++		if (candidate) {
++			args->object_id = checkpoint_object_id(candidate->obj);
++			args->cursor++;
++			args->size = candidate->size;
++		}
++		mutex_unlock(&vm->mutex);
++		ret = candidate ? 0 : -ENOENT;
++	} else if (args->op == I915_CRIU_BINDING_CREATE) {
++		unsigned long tracked_index;
++		struct i915_vma *tracked;
++		bool local = args->flags == I915_CRIU_BINDING_LOCAL;
++		bool unbound = args->flags == I915_CRIU_BINDING_UNBOUND;
++		bool newly_bound = false;
++		void *entry;
++		u32 handle;
++
++		if ((!local && !unbound) || args->cursor || !args->object_id ||
++		    !args->size || !IS_ALIGNED(args->size, I915_GTT_PAGE_SIZE) ||
++		    (local && (args->address & ~PIN_OFFSET_MASK ||
++			       !IS_ALIGNED(args->address, I915_GTT_PAGE_SIZE))) ||
++		    (unbound && args->address)) {
++			ret = -EINVAL;
++			goto out;
++		}
++		ret = check_session(fpriv, args->cookie,
++				    I915_CRIU_MODE_RESTORE);
++		if (ret)
++			goto out;
++		if (args->vm_id) {
++			if (!xa_load(&fpriv->criu_restore_vms, args->vm_id)) {
++				ret = -ENOENT;
++				goto out;
++			}
++			vm = xa_load(&fpriv->vm_xa, args->vm_id);
++		} else {
++			if (!fpriv->criu_restore_default_vm) {
++				ret = -ENOENT;
++				goto out;
++			}
++			vm = default_context_vm(fpriv);
++		}
++		entry = xa_load(&fpriv->criu_restore_handles, args->object_id);
++		if (!vm || !entry) {
++			ret = -ENOENT;
++			goto out;
++		}
++		handle = xa_to_value(entry);
++		object = i915_gem_object_lookup(file, handle);
++		if (!object) {
++			ret = -ENOENT;
++			goto out;
++		}
++		if (args->size != object->base.size) {
++			ret = -EINVAL;
++			goto put_object;
++		}
++		vma = i915_vma_instance(object, vm, NULL);
++		if (IS_ERR(vma)) {
++			ret = PTR_ERR(vma);
++			goto put_object;
++		}
++		xa_for_each(&fpriv->criu_restore_bindings, tracked_index, tracked) {
++			if (tracked == vma) {
++				ret = -EEXIST;
++				goto put_object;
++			}
++		}
++		if (local) {
++			u64 pin_flags = args->address | PIN_OFFSET_FIXED | PIN_USER |
++					PIN_NOEVICT | PIN_VALIDATE;
++
++			if (i915_vma_is_bound(vma, I915_VMA_BIND_MASK)) {
++				ret = -EEXIST;
++				goto put_object;
++			}
++			/* PIN_VALIDATE binds without incrementing the pin count. */
++			ret = i915_vma_pin(vma, args->size, 0, pin_flags);
++			newly_bound = !ret;
++			if (!ret && (i915_vma_offset(vma) != args->address ||
++				     vma->size != args->size ||
++				     !i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND)))
++				ret = -EIO;
++		} else if (drm_mm_node_allocated(&vma->node) || vma->guard ||
++			   vma->size != args->size ||
++			   vma->gtt_view.type != I915_GTT_VIEW_NORMAL ||
++			   i915_vma_is_active(vma) || atomic_read(&vma->flags)) {
++			ret = -EIO;
++		} else {
++			ret = 0;
++		}
++		if (!ret) {
++			u32 index;
++			int xa_ret;
++
++			xa_ret = xa_alloc(&fpriv->criu_restore_bindings, &index,
++					  i915_vma_get(vma),
++					  XA_LIMIT(0, U32_MAX), GFP_KERNEL);
++			if (xa_ret) {
++				i915_vma_put(vma);
++				ret = xa_ret;
++			}
++		}
++		if (ret && newly_bound &&
++		    i915_vma_is_bound(vma, I915_VMA_LOCAL_BIND))
++			WARN_ON(i915_vma_unbind(vma));
++put_object:
++		i915_gem_object_put(object);
++	} else {
++		ret = -EINVAL;
++	}
++out:
++	mutex_unlock(&fpriv->criu_lock);
++	return ret;
++}
+diff --git a/drivers/gpu/drm/i915/i915_criu.h b/drivers/gpu/drm/i915/i915_criu.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..aacf12f64540c0c47cbab6517545fab082161269
+--- /dev/null
++++ b/drivers/gpu/drm/i915/i915_criu.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef __I915_CRIU_H__
++#define __I915_CRIU_H__
++
++struct drm_device;
++struct drm_file;
++
++void i915_criu_file_init(struct drm_file *file);
++void i915_criu_file_fini(struct drm_file *file);
++
++int i915_criu_session_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file);
++int i915_criu_object_ioctl(struct drm_device *dev, void *data,
++			   struct drm_file *file);
++int i915_criu_mapping_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file);
++int i915_criu_data_ioctl(struct drm_device *dev, void *data,
++			 struct drm_file *file);
++int i915_criu_syncobj_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file);
++int i915_criu_sync_file_ioctl(struct drm_device *dev, void *data,
++			      struct drm_file *file);
++int i915_criu_file_ioctl(struct drm_device *dev, void *data,
++			 struct drm_file *file);
++int i915_criu_framebuffer_ioctl(struct drm_device *dev, void *data,
++				struct drm_file *file);
++int i915_criu_blob_ioctl(struct drm_device *dev, void *data,
++			 struct drm_file *file);
++int i915_criu_context_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file);
++int i915_criu_binding_ioctl(struct drm_device *dev, void *data,
++			    struct drm_file *file);
++
++#endif
+diff --git a/drivers/gpu/drm/i915/i915_driver.c b/drivers/gpu/drm/i915/i915_driver.c
+index d9be7a5a239c167bba88b1dd069c0607cb700e92..636cd794677a8708dd53731d2a6c3c965b02d233 100644
+--- a/drivers/gpu/drm/i915/i915_driver.c
++++ b/drivers/gpu/drm/i915/i915_driver.c
+@@ -100,6 +100,7 @@
+ #include "i915_dsb_buffer.h"
+ #include "i915_edram.h"
+ #include "i915_file_private.h"
++#include "i915_criu.h"
+ #include "i915_getparam.h"
+ #include "i915_gmch.h"
+ #include "i915_hdcp_gsc.h"
+@@ -1026,6 +1027,7 @@ static void i915_driver_postclose(struct drm_device *dev, struct drm_file *file)
+ 	struct drm_i915_file_private *file_priv = file->driver_priv;
+ 
+ 	i915_gem_context_close(file);
++	i915_criu_file_fini(file);
+ 	i915_drm_client_put(file_priv->client);
+ 
+ 	kfree_rcu(file_priv, rcu);
+@@ -1849,6 +1851,17 @@ static const struct drm_ioctl_desc i915_ioctls[] = {
+ 	DRM_IOCTL_DEF_DRV(I915_QUERY, i915_query_ioctl, DRM_RENDER_ALLOW),
+ 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_CREATE, i915_gem_vm_create_ioctl, DRM_RENDER_ALLOW),
+ 	DRM_IOCTL_DEF_DRV(I915_GEM_VM_DESTROY, i915_gem_vm_destroy_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_SESSION, i915_criu_session_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_OBJECT, i915_criu_object_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_DATA, i915_criu_data_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_SYNCOBJ, i915_criu_syncobj_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_CONTEXT, i915_criu_context_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_BINDING, i915_criu_binding_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_SYNC_FILE, i915_criu_sync_file_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_FILE, i915_criu_file_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_FRAMEBUFFER, i915_criu_framebuffer_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_BLOB, i915_criu_blob_ioctl, DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(I915_CRIU_MAPPING, i915_criu_mapping_ioctl, DRM_RENDER_ALLOW),
+ };
+ 
+ /*
+diff --git a/drivers/gpu/drm/i915/i915_file_private.h b/drivers/gpu/drm/i915/i915_file_private.h
+index c9cb8eecacde02192c35154c97ede24aaba72000..4cd2db081dd8da5f2e368a2cff22e99ed9e74e29 100644
+--- a/drivers/gpu/drm/i915/i915_file_private.h
++++ b/drivers/gpu/drm/i915/i915_file_private.h
+@@ -106,6 +106,21 @@ struct drm_i915_file_private {
+ 	unsigned long hang_timestamp;
+ 
+ 	struct i915_drm_client *client;
++
++	/* Experimental transactional checkpoint/restore state. */
++	struct mutex criu_lock;
++	struct xarray criu_restore_handles;
++	struct xarray criu_restore_syncobjs;
++	struct xarray criu_restore_contexts;
++	struct xarray criu_restore_vms;
++	struct xarray criu_restore_bindings;
++	struct xarray criu_restore_fbs;
++	struct xarray criu_restore_blobs;
++	u64 criu_cookie;
++	u64 criu_reset_epoch;
++	u32 criu_mode;
++	bool criu_context_touched;
++	bool criu_restore_default_vm;
+ };
+ 
+ #endif /* __I915_FILE_PRIVATE_H__ */
+diff --git a/drivers/gpu/drm/i915/i915_gem.c b/drivers/gpu/drm/i915/i915_gem.c
+index a432daf8038a5c2b0b1b34c97bbaf0c059390bac..5beb4ff63495a776578161b1c31eabf0862997f7 100644
+--- a/drivers/gpu/drm/i915/i915_gem.c
++++ b/drivers/gpu/drm/i915/i915_gem.c
+@@ -54,6 +54,7 @@
+ 
+ #include "i915_drv.h"
+ #include "i915_file_private.h"
++#include "i915_criu.h"
+ #include "i915_trace.h"
+ #include "i915_vgpu.h"
+ #include "intel_clock_gating.h"
+@@ -1334,6 +1335,7 @@ int i915_gem_open(struct drm_i915_private *i915, struct drm_file *file)
+ 
+ 	file_priv->bsd_engine = -1;
+ 	file_priv->hang_timestamp = jiffies;
++	i915_criu_file_init(file);
+ 
+ 	ret = i915_gem_context_open(i915, file);
+ 	if (ret)
+@@ -1342,6 +1344,7 @@ int i915_gem_open(struct drm_i915_private *i915, struct drm_file *file)
+ 	return 0;
+ 
+ err_context:
++	i915_criu_file_fini(file);
+ 	i915_drm_client_put(client);
+ err_client:
+ 	kfree(file_priv);
+diff --git a/drivers/input/evdev.c b/drivers/input/evdev.c
+index c7325226cb8663a3fd2a3224815403630c7d2ce7..f006f07ea28493227a3fdcd313d8f58412b26e2e 100644
+--- a/drivers/input/evdev.c
++++ b/drivers/input/evdev.c
+@@ -171,6 +171,22 @@ static void evdev_queue_syn_dropped(struct evdev_client *client)
+ 	spin_unlock_irqrestore(&client->buffer_lock, flags);
+ }
+ 
++static unsigned int evdev_get_clk_id(const struct evdev_client *client)
++{
++	switch (client->clk_type) {
++	case INPUT_CLK_REAL:
++		return CLOCK_REALTIME;
++	case INPUT_CLK_MONO:
++		return CLOCK_MONOTONIC;
++	case INPUT_CLK_BOOT:
++		return CLOCK_BOOTTIME;
++	case INPUT_CLK_MAX:
++		return U32_MAX;
++	}
++
++	return U32_MAX;
++}
++
+ static int evdev_set_clk_type(struct evdev_client *client, unsigned int clkid)
+ {
+ 	unsigned long flags;
+@@ -1024,6 +1040,50 @@ static int evdev_get_mask(struct evdev_client *client,
+ 	return 0;
+ }
+ 
++static int evdev_get_criu_state(struct evdev *evdev,
++				struct evdev_client *client, void __user *p)
++{
++	struct input_criu_state state;
++	unsigned long irqflags;
++	unsigned int i;
++
++	if (copy_from_user(&state, p, sizeof(state)))
++		return -EFAULT;
++	if (state.version != EVDEV_CRIU_STATE_VERSION ||
++	    state.size != sizeof(state) || state.flags || state.clock_id ||
++	    state.queued_events || state.buffer_size ||
++	    memchr_inv(state.reserved, 0, sizeof(state.reserved)))
++		return -EINVAL;
++
++	memset(&state, 0, sizeof(state));
++	state.version = EVDEV_CRIU_STATE_VERSION;
++	state.size = sizeof(state);
++	state.clock_id = evdev_get_clk_id(client);
++	state.buffer_size = client->bufsize;
++
++	spin_lock_irqsave(&client->buffer_lock, irqflags);
++	state.queued_events = (client->head - client->tail) &
++			      (client->bufsize - 1);
++	if (state.queued_events)
++		state.flags |= EVDEV_CRIU_STATE_QUEUE_NONEMPTY;
++	for (i = 0; i < EV_CNT; i++) {
++		if (client->evmasks[i]) {
++			state.flags |= EVDEV_CRIU_STATE_FILTERED;
++			break;
++		}
++	}
++	spin_unlock_irqrestore(&client->buffer_lock, irqflags);
++
++	if (rcu_access_pointer(evdev->grab) == client)
++		state.flags |= EVDEV_CRIU_STATE_GRABBED;
++	if (test_bit(EV_FF, evdev->handle.dev->evbit))
++		state.flags |= EVDEV_CRIU_STATE_FORCE_FEEDBACK;
++
++	if (copy_to_user(p, &state, sizeof(state)))
++		return -EFAULT;
++	return 0;
++}
++
+ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
+ 			   void __user *p, int compat_mode)
+ {
+@@ -1123,6 +1183,9 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
+ 
+ 		return evdev_set_clk_type(client, i);
+ 
++	case EVIOCGCRIUSTATE:
++		return evdev_get_criu_state(evdev, client, p);
++
+ 	case EVIOCGKEYCODE:
+ 		return evdev_handle_get_keycode(dev, p);
+ 
+diff --git a/include/uapi/drm/i915_drm.h b/include/uapi/drm/i915_drm.h
+index 535cb68fdb5c4b49b3ae4784338b66e5bb18268f..93388386f4f5a75e7d1c4434634db39d30b47988 100644
+--- a/include/uapi/drm/i915_drm.h
++++ b/include/uapi/drm/i915_drm.h
+@@ -485,6 +485,17 @@ typedef struct _drm_i915_sarea {
+ #define DRM_I915_GEM_VM_CREATE		0x3a
+ #define DRM_I915_GEM_VM_DESTROY		0x3b
+ #define DRM_I915_GEM_CREATE_EXT		0x3c
++#define DRM_I915_CRIU_SESSION		0x3d
++#define DRM_I915_CRIU_OBJECT		0x3e
++#define DRM_I915_CRIU_DATA		0x3f
++#define DRM_I915_CRIU_SYNCOBJ		0x40
++#define DRM_I915_CRIU_CONTEXT		0x41
++#define DRM_I915_CRIU_BINDING		0x42
++#define DRM_I915_CRIU_SYNC_FILE		0x43
++#define DRM_I915_CRIU_FILE		0x44
++#define DRM_I915_CRIU_FRAMEBUFFER	0x45
++#define DRM_I915_CRIU_BLOB		0x46
++#define DRM_I915_CRIU_MAPPING		0x47
+ /* Must be kept compact -- no holes */
+ 
+ #define DRM_IOCTL_I915_INIT		DRM_IOW( DRM_COMMAND_BASE + DRM_I915_INIT, drm_i915_init_t)
+@@ -518,6 +529,17 @@ typedef struct _drm_i915_sarea {
+ #define DRM_IOCTL_I915_GEM_LEAVEVT	DRM_IO(DRM_COMMAND_BASE + DRM_I915_GEM_LEAVEVT)
+ #define DRM_IOCTL_I915_GEM_CREATE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE, struct drm_i915_gem_create)
+ #define DRM_IOCTL_I915_GEM_CREATE_EXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_CREATE_EXT, struct drm_i915_gem_create_ext)
++#define DRM_IOCTL_I915_CRIU_SESSION	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SESSION, struct drm_i915_criu_session)
++#define DRM_IOCTL_I915_CRIU_OBJECT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_OBJECT, struct drm_i915_criu_object)
++#define DRM_IOCTL_I915_CRIU_DATA	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_DATA, struct drm_i915_criu_data)
++#define DRM_IOCTL_I915_CRIU_SYNCOBJ	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SYNCOBJ, struct drm_i915_criu_syncobj)
++#define DRM_IOCTL_I915_CRIU_CONTEXT	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_CONTEXT, struct drm_i915_criu_context)
++#define DRM_IOCTL_I915_CRIU_BINDING	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_BINDING, struct drm_i915_criu_binding)
++#define DRM_IOCTL_I915_CRIU_SYNC_FILE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_SYNC_FILE, struct drm_i915_criu_sync_file)
++#define DRM_IOCTL_I915_CRIU_FILE	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_FILE, struct drm_i915_criu_file)
++#define DRM_IOCTL_I915_CRIU_FRAMEBUFFER	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_FRAMEBUFFER, struct drm_i915_criu_framebuffer)
++#define DRM_IOCTL_I915_CRIU_BLOB	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_BLOB, struct drm_i915_criu_blob)
++#define DRM_IOCTL_I915_CRIU_MAPPING	DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_CRIU_MAPPING, struct drm_i915_criu_mapping)
+ #define DRM_IOCTL_I915_GEM_PREAD	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PREAD, struct drm_i915_gem_pread)
+ #define DRM_IOCTL_I915_GEM_PWRITE	DRM_IOW (DRM_COMMAND_BASE + DRM_I915_GEM_PWRITE, struct drm_i915_gem_pwrite)
+ #define DRM_IOCTL_I915_GEM_MMAP		DRM_IOWR(DRM_COMMAND_BASE + DRM_I915_GEM_MMAP, struct drm_i915_gem_mmap)
+@@ -3906,6 +3928,338 @@ struct drm_i915_gem_create_ext_set_pat {
+ 	__u32 rsvd;
+ };
+ 
++/*
++ * Experimental, versioned i915 checkpoint/restore interface.
++ *
++ * A session is transactional. Dump sessions freeze the drm_file state until
++ * COMMIT or ABORT. Restore sessions retain every newly created object until
++ * COMMIT and destroy them on ABORT. Version 2 supports idle ordinary shmem
++ * GEM objects shared between i915 file descriptions. Version 3 additionally
++ * preserves idle empty, signaled binary, and fully signaled timeline syncobjs.
++ * Version 4 preserves configured but not yet submitted contexts and empty
++ * explicit GPU VMs. Version 5 preserves idle materialized contexts using the
++ * default engine map and ordinary local object bindings at exact GPU virtual
++ * addresses. Version 6 accounts for retained i915-exported dma-buf descriptor
++ * references while refusing attachments and imported non-i915 objects.
++ * Version 7 preserves complete retained descriptor references for successful
++ * signaled binary sync_file exports whose source syncobj is unambiguous.
++ * Version 8 preserves primary/render node role, client capabilities, current
++ * DRM master ownership, single-plane linear framebuffers at exact IDs, and
++ * user-created KMS property blobs at exact IDs. Atomic property state remains
++ * a validated userspace image applied through generic DRM atomic ioctls.
++ * Version 9 adds exact per-VMA mmap-node provenance. Version 10 additionally
++ * preserves bounded user-selected physical engine maps. Version 11 preserves
++ * the implicit default-context VM and its exact local bindings. Version 12
++ * preserves idle, normal-view unbound VMA identities without creating a GPU
++ * page-table binding. Version 13 preserves one-plane X/Y-tiled local i915
++ * framebuffers while retaining their exact modifier and raw GEM contents. It
++ * still refuses userptr, protected content, virtual/balanced/parallel engines,
++ * per-engine
++ * SSEU overrides, active requests, special VMA views, leases, pending events,
++ * unsupported sync_file fence graphs, and unsupported KMS resources.
++ */
++#define I915_CRIU_ABI_VERSION 14
++
++#define I915_CRIU_SESSION_DUMP_BEGIN    1
++#define I915_CRIU_SESSION_RESTORE_BEGIN 2
++#define I915_CRIU_SESSION_COMMIT        3
++#define I915_CRIU_SESSION_ABORT         4
++
++#define I915_CRIU_FAILURE_STAGE_NONE          0
++#define I915_CRIU_FAILURE_STAGE_AUTHORIZATION 1
++#define I915_CRIU_FAILURE_STAGE_CONTEXT       2
++#define I915_CRIU_FAILURE_STAGE_PROTO_CONTEXT 3
++#define I915_CRIU_FAILURE_STAGE_CONTEXT_IDS   4
++#define I915_CRIU_FAILURE_STAGE_VM            5
++#define I915_CRIU_FAILURE_STAGE_VMA           6
++#define I915_CRIU_FAILURE_STAGE_SYNCOBJ       7
++
++#define I915_CRIU_FAILURE_ACCESS               1
++#define I915_CRIU_FAILURE_PROTECTED_CONTENT    2
++#define I915_CRIU_FAILURE_USER_FLAGS           3
++#define I915_CRIU_FAILURE_UNTRACKED_VM         4
++#define I915_CRIU_FAILURE_ENGINE_COUNT         5
++#define I915_CRIU_FAILURE_VIRTUAL_ENGINE       6
++#define I915_CRIU_FAILURE_ENGINE_SSEU          7
++#define I915_CRIU_FAILURE_ACTIVE_REQUEST       8
++#define I915_CRIU_FAILURE_DEFAULT_VM_BINDINGS  9
++#define I915_CRIU_FAILURE_LEGACY_SSEU         10
++#define I915_CRIU_FAILURE_INVALID_ENGINE      11
++#define I915_CRIU_FAILURE_PHYSICAL_ENGINE     12
++#define I915_CRIU_FAILURE_ENGINE_TYPE         13
++#define I915_CRIU_FAILURE_ID_GAP              14
++#define I915_CRIU_FAILURE_UNBOUND_VMA         15
++#define I915_CRIU_FAILURE_VMA_NODE            16
++#define I915_CRIU_FAILURE_VMA_GUARD           17
++#define I915_CRIU_FAILURE_VMA_SIZE            18
++#define I915_CRIU_FAILURE_VMA_VIEW            19
++#define I915_CRIU_FAILURE_VMA_ACTIVE          20
++#define I915_CRIU_FAILURE_VMA_BIND_FLAGS      21
++#define I915_CRIU_FAILURE_VMA_FLAGS           22
++#define I915_CRIU_FAILURE_VMA_MISSING_HANDLE  23
++
++struct drm_i915_criu_session {
++	__u32 version;
++	__u32 op;
++	__s32 target_pid;
++	__u32 flags;
++	__u64 cookie;
++	/* Output-only diagnostics retained even when the ioctl returns an error. */
++	__u32 failure_stage;
++	__u32 failure_reason;
++	/* Stage-specific resource identity; context/engine pairs use high/low u32. */
++	__u64 failure_id;
++	__u64 reserved[2];
++};
++
++#define I915_CRIU_OBJECT_QUERY  1
++#define I915_CRIU_OBJECT_CREATE 2
++#define I915_CRIU_OBJECT_IMPORT 3
++
++#define I915_CRIU_OBJECT_SHMEM (1u << 0)
++#define I915_CRIU_OBJECT_SHARED (1u << 0)
++
++struct drm_i915_criu_object {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	/* QUERY: previous handle, zero starts enumeration. CREATE: output handle. */
++	__u32 handle;
++	__u32 flags;
++	/* Opaque identity shared by every handle to one object in the image. */
++	__u64 object_id;
++	__u64 size;
++	/* One CPU mmap offset in bytes for the minimal version. */
++	__u64 mmap_offset;
++	__u32 mmap_type;
++	__u32 pad;
++	__u32 handle_count;
++	__u32 sharing_flags;
++	/* Zero when unexported; otherwise the complete dma-buf file refcount. */
++	__u32 dma_buf_refcount;
++	/* Attachments are reported for strict userspace refusal in version 6. */
++	__u32 dma_buf_attachment_count;
++	/* Legacy fence-register tiling metadata; NONE requires a zero stride. */
++	__u32 tiling_mode;
++	__u32 stride;
++	__u64 reserved;
++};
++
++#define I915_CRIU_DATA_READ  1
++#define I915_CRIU_DATA_WRITE 2
++
++#define I915_CRIU_MAPPING_QUERY 1
++#define I915_CRIU_MAPPING_CREATE 2
++
++/**
++ * struct drm_i915_criu_mapping - checkpoint one GEM mmap-offset node
++ *
++ * QUERY accepts an offset from a captured i915.gem VMA and returns the
++ * containing node's object identity, base, size and mmap type. CREATE accepts
++ * an already restored object identity and mmap type and returns the new node
++ * base. The transaction rejects offsets not authorized to this drm_file.
++ */
++struct drm_i915_criu_mapping {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	__u64 object_id;
++	__u64 offset;
++	__u64 size;
++	__u32 mmap_type;
++	__u32 pad;
++	__u64 reserved[3];
++};
++
++struct drm_i915_criu_data {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	__u32 handle;
++	__u32 pad;
++	__u64 offset;
++	__u64 size;
++	__u64 data_ptr;
++	__u64 reserved[4];
++};
++
++#define I915_CRIU_SYNCOBJ_QUERY  1
++#define I915_CRIU_SYNCOBJ_CREATE 2
++
++#define I915_CRIU_SYNCOBJ_EMPTY           (1u << 0)
++#define I915_CRIU_SYNCOBJ_BINARY_SIGNALED (1u << 1)
++#define I915_CRIU_SYNCOBJ_TIMELINE        (1u << 2)
++
++struct drm_i915_criu_syncobj {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	/* Previous handle on input; next handle on output. Zero starts. */
++	__u32 handle;
++	__u32 flags;
++	/* Last fully signaled point for a timeline syncobj. */
++	__u64 point;
++	__u64 reserved[4];
++};
++
++#define I915_CRIU_SYNC_FILE_QUERY  1
++#define I915_CRIU_SYNC_FILE_CREATE 2
++
++#define I915_CRIU_SYNC_FILE_BINARY_SIGNALED (1u << 0)
++
++struct drm_i915_criu_sync_file {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	/* QUERY input or CREATE output. */
++	__s32 fd;
++	/* Exact source syncobj handle in this drm_file. */
++	__u32 handle;
++	__u32 flags;
++	/* QUERY output, excluding the ioctl's temporary reference. */
++	__u32 fd_refcount;
++	/* Reserved for a supported timeline point in a later version. */
++	__u64 point;
++	__u64 reserved[4];
++};
++
++#define I915_CRIU_FILE_QUERY   1
++#define I915_CRIU_FILE_RESTORE 2
++
++#define I915_CRIU_FILE_PRIMARY (1u << 0)
++#define I915_CRIU_FILE_RENDER  (1u << 1)
++#define I915_CRIU_FILE_AUTHENTICATED        (1u << 2)
++#define I915_CRIU_FILE_MASTER               (1u << 3)
++#define I915_CRIU_FILE_ATOMIC               (1u << 4)
++#define I915_CRIU_FILE_UNIVERSAL_PLANES     (1u << 5)
++#define I915_CRIU_FILE_ASPECT_RATIO         (1u << 6)
++#define I915_CRIU_FILE_STEREO               (1u << 7)
++#define I915_CRIU_FILE_WRITEBACK_CONNECTORS (1u << 8)
++
++struct drm_i915_criu_file {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	__u32 flags;
++	__u16 vendor_id;
++	__u16 device_id;
++	__u16 subsystem_vendor_id;
++	__u16 subsystem_device_id;
++	__u32 revision;
++	__u64 reserved[3];
++};
++
++#define I915_CRIU_FRAMEBUFFER_QUERY  1
++#define I915_CRIU_FRAMEBUFFER_CREATE 2
++
++#define I915_CRIU_FRAMEBUFFER_LINEAR  (1u << 0)
++#define I915_CRIU_FRAMEBUFFER_X_TILED (1u << 1)
++#define I915_CRIU_FRAMEBUFFER_Y_TILED (1u << 2)
++
++#define I915_CRIU_FRAMEBUFFER_FAILURE_NONE       0
++#define I915_CRIU_FRAMEBUFFER_FAILURE_LAYOUT     1
++#define I915_CRIU_FRAMEBUFFER_FAILURE_MODIFIER   2
++#define I915_CRIU_FRAMEBUFFER_FAILURE_OBJECT     3
++#define I915_CRIU_FRAMEBUFFER_FAILURE_TILING     4
++#define I915_CRIU_FRAMEBUFFER_FAILURE_FORMAT     5
++
++struct drm_i915_criu_framebuffer {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	/* QUERY cursor/exact CREATE ID. Zero starts enumeration. */
++	__u32 id;
++	__u32 flags;
++	__u64 object_id;
++	__u32 width;
++	__u32 height;
++	__u32 pixel_format;
++	__u32 pitch;
++	__u32 offset;
++	/* QUERY output; CREATE must be exactly one. */
++	__u32 num_planes;
++	__u64 modifier;
++	/* QUERY diagnostics; CREATE requires NONE tiling and zero stride. */
++	__u32 object_tiling;
++	__u32 object_stride;
++	/* Output diagnostic retained when QUERY returns an error. */
++	__u32 failure_reason;
++	__u32 pad;
++	__u64 reserved;
++};
++
++#define I915_CRIU_BLOB_QUERY  1
++#define I915_CRIU_BLOB_CREATE 2
++#define I915_CRIU_BLOB_READ   3
++
++struct drm_i915_criu_blob {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	/* QUERY cursor/exact CREATE ID. Zero starts enumeration. */
++	__u32 id;
++	__u32 length;
++	__u64 data_ptr;
++	__u64 reserved[4];
++};
++
++#define I915_CRIU_CONTEXT_QUERY_VM       1
++#define I915_CRIU_CONTEXT_QUERY_CONTEXT  2
++#define I915_CRIU_CONTEXT_CREATE_VM      3
++#define I915_CRIU_CONTEXT_CREATE_CONTEXT 4
++
++#define I915_CRIU_CONTEXT_SINGLE_TIMELINE  (1u << 0)
++#define I915_CRIU_CONTEXT_NO_ERROR_CAPTURE (1u << 1)
++#define I915_CRIU_CONTEXT_BANNABLE         (1u << 2)
++#define I915_CRIU_CONTEXT_RECOVERABLE      (1u << 3)
++#define I915_CRIU_CONTEXT_PERSISTENCE      (1u << 4)
++#define I915_CRIU_CONTEXT_USER_ENGINES     (1u << 5)
++#define I915_CRIU_VM_DEFAULT               (1u << 0)
++
++#define I915_CRIU_MAX_CONTEXT_ENGINES 64
++
++struct drm_i915_criu_engine {
++	__u16 engine_class;
++	__u16 engine_instance;
++};
++
++struct drm_i915_criu_context {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	/* Previous ID on query input; next/exact ID on output/create input. */
++	__u32 id;
++	__u32 flags;
++	__u32 vm_id;
++	__s32 priority;
++	/* QUERY capacity/output count; CREATE exact count. */
++	__u32 engine_count;
++	__u32 pad;
++	__u64 engines_ptr;
++	__u64 reserved[2];
++};
++
++#define I915_CRIU_BINDING_QUERY  1
++#define I915_CRIU_BINDING_CREATE 2
++
++#define I915_CRIU_BINDING_LOCAL (1u << 0)
++#define I915_CRIU_BINDING_UNBOUND (1u << 1)
++
++struct drm_i915_criu_binding {
++	__u32 version;
++	__u32 op;
++	__u64 cookie;
++	__u32 vm_id;
++	__u32 flags;
++	__u64 object_id;
++	/* Zero starts query; incremented on output. Must be zero for create. */
++	__u64 cursor;
++	/* Zero on query input; exact bound address or zero if unbound. */
++	__u64 address;
++	__u64 size;
++	__u64 reserved[3];
++};
++
+ /* ID of the protected content session managed by i915 when PXP is active */
+ #define I915_PROTECTED_CONTENT_DEFAULT_SESSION 0xf
+ 
+diff --git a/include/uapi/linux/input.h b/include/uapi/linux/input.h
+index 6aa703fcfcfb740aa25a6240b02d2ecab7956108..0fec679ec6cdde82b586d760c3ffd1550e5e2d48 100644
+--- a/include/uapi/linux/input.h
++++ b/include/uapi/linux/input.h
+@@ -129,6 +129,28 @@ struct input_mask {
+ 	__u64 codes_ptr;
+ };
+ 
++/*
++ * Conservative checkpoint admission for one evdev file description.
++ *
++ * Version 1 deliberately exposes no queued input payload. Userspace may
++ * checkpoint only the default empty subset and must refuse every flag below.
++ */
++#define EVDEV_CRIU_STATE_VERSION	1
++#define EVDEV_CRIU_STATE_QUEUE_NONEMPTY	(1ULL << 0)
++#define EVDEV_CRIU_STATE_GRABBED	(1ULL << 1)
++#define EVDEV_CRIU_STATE_FILTERED	(1ULL << 2)
++#define EVDEV_CRIU_STATE_FORCE_FEEDBACK	(1ULL << 3)
++
++struct input_criu_state {
++	__u32 version;
++	__u32 size;
++	__u64 flags;
++	__u32 clock_id;
++	__u32 queued_events;
++	__u32 buffer_size;
++	__u32 reserved[9];
++};
++
+ #define EVIOCGVERSION		_IOR('E', 0x01, int)			/* get driver version */
+ #define EVIOCGID		_IOR('E', 0x02, struct input_id)	/* get device ID */
+ #define EVIOCGREP		_IOR('E', 0x03, unsigned int[2])	/* get repeat settings */
+@@ -241,6 +263,7 @@ struct input_mask {
+ #define EVIOCSMASK		_IOW('E', 0x93, struct input_mask)	/* Set event-masks */
+ 
+ #define EVIOCSCLOCKID		_IOW('E', 0xa0, int)			/* Set clockid to be used for timestamps */
++#define EVIOCGCRIUSTATE		_IOWR('E', 0xa1, struct input_criu_state)
+ 
+ /*
+  * IDs.
+diff --git a/kernel/ptrace.c b/kernel/ptrace.c
+index 130043bfc2091c12ccb0a90957baed75e9803735..0e0e1ffdffe6b429ff1ff5c6acac7b4a12f34347 100644
+--- a/kernel/ptrace.c
++++ b/kernel/ptrace.c
+@@ -364,6 +364,7 @@ bool ptrace_may_access(struct task_struct *task, unsigned int mode)
+ 	task_unlock(task);
+ 	return !err;
+ }
++EXPORT_SYMBOL_GPL(ptrace_may_access);
+ 
+ static int check_ptrace_options(unsigned long data)
+ {

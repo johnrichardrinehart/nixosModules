@@ -94,7 +94,8 @@ inputs: {
         name: path: final.callPackage path (packageArgs.${name} or { })
       ) packagePaths;
     in
-    {
+    (inputs.wayland-session-supervisor.overlays.default final prev)
+    // {
       dev = (prev.dev or { }) // {
         johnrinehart = johnPkgs;
       };

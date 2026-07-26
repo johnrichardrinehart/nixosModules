@@ -104,8 +104,9 @@ let
   '';
 
   # Shared PAM configuration for password authentication with an optional
-  # fingerprint factor.
-  fprintPamConfig = ''
+  # fingerprint factor. Keyring management is restricted to user sessions;
+  # authorization services run with an elevated target identity.
+  fprintPamConfig = withGnomeKeyring: ''
     # Account management
     account required pam_unix.so
 
@@ -116,11 +117,11 @@ let
     ''}
     # Password is always required (do NOT use try_first_pass - we need fresh password for keyring)
     auth required pam_unix.so nullok
-    auth optional ${pkgs.gnome-keyring}/lib/security/pam_gnome_keyring.so
+    ${lib.optionalString withGnomeKeyring "auth optional ${pkgs.gnome-keyring}/lib/security/pam_gnome_keyring.so"}
 
     # Password management
     password sufficient pam_unix.so nullok yescrypt
-    password optional ${pkgs.gnome-keyring}/lib/security/pam_gnome_keyring.so use_authtok
+    ${lib.optionalString withGnomeKeyring "password optional ${pkgs.gnome-keyring}/lib/security/pam_gnome_keyring.so use_authtok"}
 
     # Session management
     session required pam_env.so conffile=/etc/pam/environment readenv=0
@@ -128,7 +129,7 @@ let
     session required pam_loginuid.so
     session optional ${pkgs.systemd}/lib/security/pam_systemd.so
     session required pam_limits.so
-    session optional ${pkgs.gnome-keyring}/lib/security/pam_gnome_keyring.so auto_start
+    ${lib.optionalString withGnomeKeyring "session optional ${pkgs.gnome-keyring}/lib/security/pam_gnome_keyring.so auto_start"}
   '';
 in
 {
@@ -344,22 +345,31 @@ in
         });
 
     # Custom PAM config: fingerprint as first factor (rejects bad
-    # fingerprints), then mandatory password - applied to authentication
-    # services
+    # fingerprints), then mandatory password. Only user-session services may
+    # manage the user's keyring.
     security.pam.services =
-      lib.genAttrs
-        [
+      let
+        keyringServices = [
           "greetd"
           "hyprlock"
           "login"
+          "swaylock"
+        ];
+        authorizationServices = [
           "polkit-1"
           "sudo"
-          "swaylock"
-        ]
-        (_: {
-          enableGnomeKeyring = true;
-          text = fprintPamConfig;
-        });
+        ];
+      in
+      lib.genAttrs (keyringServices ++ authorizationServices) (
+        name:
+        let
+          withGnomeKeyring = builtins.elem name keyringServices;
+        in
+        {
+          enableGnomeKeyring = withGnomeKeyring;
+          text = fprintPamConfig withGnomeKeyring;
+        }
+      );
 
     services.hypridle.enable = true;
     programs.hyprlock.enable = true;
