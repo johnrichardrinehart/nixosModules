@@ -24,6 +24,7 @@ let
   niriPatches = [
     ./0000-version-report-downstream-patches.patch
     ./0001-overview-allow-targeting-active-output.patch
+    ./0002-screencast-accept-remote-desktop-sessions.patch
   ];
   niriPatchVersionSuffix = lib.concatMapStrings (
     patch: "\n+ ${builtins.baseNameOf (toString patch)}"
@@ -49,6 +50,9 @@ let
     ;
 
   niri-cycle-display-mode = pkgs.dev.johnrinehart.niri-cycle-display-mode.override {
+    niri = config.programs.niri.package;
+  };
+  niri-remote-desktop = pkgs.dev.johnrinehart.niri-remote-desktop.override {
     niri = config.programs.niri.package;
   };
 
@@ -213,6 +217,18 @@ in
     services.greetd.settings.default_session = {
       command = "${lib.getExe' config.programs.niri.package "niri-session"}";
       user = primaryUser;
+    };
+
+    systemd.user.services.niri-remote-desktop = {
+      description = "Expose authorized remote pointer motion to the Niri portal";
+      wantedBy = [ "graphical-session.target" ];
+      after = [ "niri.service" ];
+      partOf = [ "graphical-session.target" ];
+      serviceConfig = {
+        ExecStart = lib.getExe niri-remote-desktop;
+        Restart = "on-failure";
+        RestartSec = 1;
+      };
     };
 
     systemd.user.services.niri-display-mode-watch = {
