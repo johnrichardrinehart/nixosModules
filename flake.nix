@@ -11,6 +11,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    git-meld = {
+      url = "github:johnrichardrinehart/git-meld";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
       flake = true;
@@ -77,6 +82,10 @@
                 checks = {
                   pre-commit = preCommitCheck;
                   formatting = treefmtEval.config.build.check inputs.self;
+                  git-meld-module = import ./nix/checks/git-meld-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                 };
 
                 formatter = treefmtEval.config.build.wrapper;

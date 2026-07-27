@@ -40,6 +40,10 @@ inputs: {
           system = final.stdenv.hostPlatform.system;
         };
         droidcam-v4l2loopback.kernel = final.linuxPackages_latest.kernel;
+        git-meld = {
+          inherit (inputs) git-meld;
+          system = final.stdenv.hostPlatform.system;
+        };
         framework-ec-flash = {
           inherit (johnPkgs) framework-ec;
           frameworkTool = final.framework-tool;

@@ -43,6 +43,7 @@
     ./filepicker.nix
     ./firmware/framework-ec.nix
     ./fonts.nix
+    ./git-meld.nix
     ./gocryptfs.nix
     ./ide.nix
     ./laptop.nix
