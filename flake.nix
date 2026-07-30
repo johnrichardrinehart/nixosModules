@@ -82,6 +82,10 @@
                 checks = {
                   pre-commit = preCommitCheck;
                   formatting = treefmtEval.config.build.check inputs.self;
+                  daylight-display-module = import ./nix/checks/daylight-display-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                   git-meld-module = import ./nix/checks/git-meld-module.nix {
                     inherit inputs pkgs;
                     inherit (inputs.nixpkgs) lib;
@@ -94,7 +98,9 @@
       };
 
       flake = {
-        lib = inputs.nixpkgs.lib;
+        lib = inputs.nixpkgs.lib // {
+          daylightDisplay = import ./lib/daylight-display.nix;
+        };
 
         nixosModules.default = import ./nixos-modules {
           inherit inputs;

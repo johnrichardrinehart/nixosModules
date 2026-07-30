@@ -277,7 +277,6 @@ in
         pkgs.waybar
         pkgs.wl-clip-persist
         pkgs.wl-clipboard
-        pkgs.wlsunset
         pkgs.xwayland-satellite
         # (builtins.getFlake "github:niri-wm/niri?rev=${niriRev}").packages.${pkgs.stdenv.hostPlatform.system}.niri
       ]

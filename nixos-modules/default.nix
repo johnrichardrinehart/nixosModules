@@ -38,6 +38,7 @@
     ./bluetooth.nix
     ./hibernate-resume-optimization.nix
     ./droidcam.nix
+    ./daylight-display.nix
     ./external-display-recovery.nix
     ./external-display-telemetry.nix
     ./filepicker.nix
