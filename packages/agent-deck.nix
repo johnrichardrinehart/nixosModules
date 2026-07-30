@@ -33,6 +33,9 @@ buildGo126Module rec {
   preCheck = ''
     export TMPDIR=/tmp/agent-deck-tests
     export HOME="$TMPDIR/home"
+    # Nix builders have variable startup latency. Use the multiplier that
+    # upstream applies in CI while retaining the performance regression tests.
+    export PERF_BUDGET_MULTIPLIER=2.0
     mkdir -p "$TMPDIR"
     mkdir -p "$HOME"
   '';
