@@ -7,16 +7,16 @@
 }:
 rustPlatform.buildRustPackage rec {
   pname = "herdr";
-  version = "0.6.10";
+  version = "0.7.5";
 
   src = fetchFromGitHub {
-    owner = "ogulcancelik";
+    owner = "herdrdev";
     repo = "herdr";
     tag = "v${version}";
-    hash = "sha256-QqjC/6vy6X7LAYn3YGmBJJTICeu4cj5qSX/DBaSlIfA=";
+    hash = "sha256-3BA8eredGku+vsL2Af7sUf43QiArR5XTHNrI+X11vFM=";
   };
 
-  cargoHash = "sha256-EG5OcK/9c6euVx26wS0WLR6bO/Ohc7rQCsLqbK0fLWA=";
+  cargoHash = "sha256-lWnc0Ka0hp7bbm+dkKKj22Dbk+Cwrld86romXs3lzBs=";
 
   zigDeps = callPackage "${src}/vendor/libghostty-vt/build.zig.zon.nix" {
     name = "${pname}-${version}-zig-cache";
@@ -38,7 +38,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = {
     description = "Agent multiplexer that lives in your terminal";
-    homepage = "https://github.com/ogulcancelik/herdr";
+    homepage = "https://github.com/herdrdev/herdr";
     license = lib.licenses.agpl3Plus;
     mainProgram = "herdr";
     maintainers = [ ];

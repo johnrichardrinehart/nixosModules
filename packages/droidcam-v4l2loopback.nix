@@ -10,8 +10,8 @@ stdenv.mkDerivation rec {
   version = "2.1.5";
 
   src = fetchFromGitHub {
-    owner = "aramg";
-    repo = "droidcam";
+    owner = "dev47apps";
+    repo = "droidcam-linux-client";
     rev = "v${version}";
     sha256 = "sha256-22lRmtXumjR/83Fg1edBisM1GjNZvNUvPs1Yg7Na1xw=";
   };
@@ -39,7 +39,7 @@ stdenv.mkDerivation rec {
 
   meta = with lib; {
     description = "DroidCam kernel module v4l2loopback-dc";
-    homepage = "https://github.com/aramg/droidcam";
+    homepage = "https://github.com/dev47apps/droidcam-linux-client";
     platforms = platforms.linux;
   };
 }
