@@ -11,11 +11,11 @@
 }:
 let
   pname = "moonshine-voice";
-  version = "0.0.62";
+  version = "0.1.0";
 
   wheel = fetchurl {
-    url = "https://files.pythonhosted.org/packages/63/4d/566ce6a74dd0ad67aed70c8b0537fdaca0b715ba22dcbb7cbe301886eb3f/moonshine_voice-${version}-py3-none-manylinux_2_34_x86_64.whl";
-    sha256 = "bb272b92104f05c2a6a44493fce7d708af8e5f840145c58dbab4ff2f20c22fa5";
+    url = "https://files.pythonhosted.org/packages/fd/a3/e3c0156664e9505af7b23072c3e947cec3a7ee938764c70424051366c368/moonshine_voice-${version}-py3-none-manylinux_2_34_x86_64.whl";
+    hash = "sha256-D4M960O61dz7TP0yV7bfg++avT8nvjGZYi/kGTLo2RY=";
   };
 in
 python3.pkgs.buildPythonPackage {
@@ -39,6 +39,7 @@ python3.pkgs.buildPythonPackage {
     tqdm
     filelock
     platformdirs
+    google-crc32c
   ];
 
   # Replace the bundled native libs with our GPU-enabled build.

@@ -7,11 +7,14 @@
   lib,
   stdenv,
   fetchFromGitHub,
+  fetchurl,
   cmake,
   ninja,
+  patchelf,
   onnxruntime,
   openvino,
   autoAddDriverRunpath,
+  diarizationModels,
   useOpenVINO ? true,
   useOnnxModels ? useOpenVINO,
   executionProviders ? {
@@ -48,6 +51,14 @@ let
   };
   audioProvider = normalizeProvider defaultOpenVINO (executionProviders.audio or { });
   decoderProvider = normalizeProvider defaultOpenVINO (executionProviders.decoder or { });
+  pldaData = fetchurl {
+    url = "https://raw.githubusercontent.com/moonshine-ai/cpp-annote/50b39685e8ea1f651752aa5a196783fb0a3fe0d9/src/community1_cpp_annote_embedded.cpp";
+    hash = "sha256-YmAsnS4cler03Y4tC/wYsUeitXjbVQ330CbM9luX25c=";
+  };
+  zipVoiceData = fetchurl {
+    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v0.1.0/core/moonshine-tts/src/zipvoice-voices-data.cpp";
+    hash = "sha256-8+TWLK6TxGXh3oUhvFcGuaIPg0y783QEvwPw013/oBI=";
+  };
   usesOpenVINO = audioProvider.provider == "openvino" || decoderProvider.provider == "openvino";
   cString = builtins.toJSON;
   audioOptionsExpr =
@@ -67,20 +78,27 @@ assert lib.assertMsg (builtins.elem decoderProvider.provider providerNames)
   "libmoonshine executionProviders.decoder.provider must be one of: ${lib.concatStringsSep ", " providerNames}";
 stdenv.mkDerivation {
   pname = "libmoonshine";
-  version = "0.0.62";
+  version = "0.1.0";
 
   src = fetchFromGitHub {
     owner = "moonshine-ai";
     repo = "moonshine";
-    tag = "v0.0.62";
-    hash = "sha256-bpep4ZyAQbg3dtPnUKnyYmtNftgAGZZy5Sl76OS09f4=";
+    tag = "v0.1.0";
+    sparseCheckout = [ "core" ];
+    hash = "sha256-SwqUnBBiA+un/wWSHpisW21gSgDJtPRc/UmcnLbyy5g=";
   };
+
+  # Upstream accepts explicit cpp-annote ONNX paths, but Moonshine uses the
+  # no-argument engine constructor, which loads generated Git LFS byte arrays.
+  # Make that constructor use separately packaged runtime models instead.
+  patches = [ ./runtime-diarization-models.patch ];
 
   sourceRoot = "source/core";
 
   nativeBuildInputs = [
     cmake
     ninja
+    patchelf
     autoAddDriverRunpath
   ];
 
@@ -93,6 +111,7 @@ stdenv.mkDerivation {
 
   cmakeFlags = [
     "-DONNXRUNTIME_LIB_PATH=${onnxruntime}/lib/libonnxruntime.so"
+    "-DMOONSHINE_DIARIZATION_MODEL_DIR=${diarizationModels}"
     "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON"
     "-DCMAKE_INSTALL_RPATH=${onnxruntime}/lib"
   ];
@@ -100,6 +119,10 @@ stdenv.mkDerivation {
   env.NIX_CFLAGS_COMPILE = "-Wno-error=unused-result -Wno-error=array-bounds";
 
   postPatch = ''
+    # Replace the LFS pointer with the separately fetched PLDA/config data.
+    cp ${pldaData} cpp-annote/src/community1_cpp_annote_embedded.cpp
+    cp ${zipVoiceData} moonshine-tts/src/zipvoice-voices-data.cpp
+
     # Replace bundled ORT headers with system ones
     rm -rf third-party/onnxruntime/include
     mkdir -p third-party/onnxruntime/include
@@ -275,6 +298,10 @@ stdenv.mkDerivation {
     install -Dm755 libmoonshine.so $out/lib/libmoonshine.so
     install -Dm644 ../moonshine-c-api.h $out/include/moonshine-c-api.h
     runHook postInstall
+  '';
+
+  postFixup = ''
+    patchelf --add-rpath ${onnxruntime}/lib $out/lib/libmoonshine.so
   '';
 
   meta = {

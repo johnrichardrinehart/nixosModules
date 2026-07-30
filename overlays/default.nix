@@ -55,7 +55,10 @@ inputs: {
         fuzzel_1_14_1.fuzzel = prev.fuzzel;
         kdlfmt.kdlfmt = kdlfmt_0_1_7;
         kill-idle-group.onIdlePackage = johnPkgs.on-idle;
-        libmoonshine.onnxruntime = johnPkgs.onnxruntime-openvino;
+        libmoonshine = {
+          diarizationModels = johnPkgs.moonshine-diarization-models;
+          onnxruntime = johnPkgs.onnxruntime-openvino;
+        };
         lock-idle-ssh-sessions = {
           idleTimeoutSeconds = 5 * 60;
           terminalMultiplexer = "tmux";
