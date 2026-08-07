@@ -58,7 +58,7 @@ in
     minimumExternalConnectors = lib.mkOption {
       type = lib.types.ints.positive;
       default = 1;
-      description = "Number of external DRM connectors required before recovery succeeds.";
+      description = "Number of connected external DRM connectors with modes and EDIDs required before recovery succeeds.";
     };
 
     snapshotOnFailure = lib.mkOption {

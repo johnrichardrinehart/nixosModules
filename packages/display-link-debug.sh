@@ -177,29 +177,78 @@ trace_toggle() {
   log "display-link tracepoints ${mode}; read /sys/kernel/tracing/trace"
 }
 
+healthy_external_connector() {
+  local connector=$1 name
+  name=$(basename "${connector%/}")
+  [[ $name != *-eDP-* ]] || return 1
+  [[ -r ${connector}status && $(<"${connector}status") == connected ]] || return 1
+  [[ -s ${connector}modes && -s ${connector}edid ]]
+}
+
+healthy_external_connector_count() {
+  local connector count=0
+  for connector in "$SYSFS_ROOT"/class/drm/card*-*/; do
+    [[ -e $connector ]] || continue
+    healthy_external_connector "$connector" && ((count += 1))
+  done
+  printf '%s\n' "$count"
+}
+
+notify_display_consumers() {
+  local connector name card
+  declare -A cards=()
+
+  for connector in "$SYSFS_ROOT"/class/drm/card*-*/; do
+    [[ -e $connector ]] || continue
+    healthy_external_connector "$connector" || continue
+    name=$(basename "${connector%/}")
+    card="$SYSFS_ROOT/class/drm/${name%%-*}"
+    [[ -w ${card}/uevent ]] && cards["$card"]=1
+  done
+
+  # Notify the DRM device rather than its connector kobject. Compositors watch
+  # the card device number and rescan all connectors when that device changes.
+  for card in "${!cards[@]}"; do
+    printf 'change\n' >"${card}/uevent"
+  done
+  udevadm settle --timeout=5 || true
+}
+
 repair() {
   need_root
-  local attempts=${1:-6} delay=${2:-2} minimum=${3:-1} attempt domain connected
+  local attempts=${1:-6} delay=${2:-2} minimum=${3:-1} attempt domain healthy
+
+  healthy=$(healthy_external_connector_count)
+  if ((healthy >= minimum)); then
+    log "${healthy} healthy external DRM connector(s) are present"
+    return 0
+  fi
+
   for ((attempt = 1; attempt <= attempts; attempt++)); do
-    connected=0
     log "recovery attempt ${attempt}/${attempts}"
+
+    # A downstream MST connector can become usable after the event that starts
+    # this service. Let the topology settle before tearing it down with a rescan.
+    sleep "$delay"
+    healthy=$(healthy_external_connector_count)
+    if ((healthy >= minimum)); then
+      notify_display_consumers
+      log "${healthy} healthy external DRM connector(s) appeared"
+      return 0
+    fi
+
     for domain in "$SYSFS_ROOT"/bus/thunderbolt/devices/domain*/rescan; do
       [[ -w $domain ]] && printf '1\n' >"$domain" || true
     done
     udevadm settle --timeout=5 || true
-    for domain in "$SYSFS_ROOT"/class/drm/card*-*/status; do
-      [[ -r $domain ]] || continue
-      if [[ $(<"$domain") == connected && $(basename "$(dirname "$domain")") != *-eDP-* ]]; then
-        ((connected += 1))
-      fi
-    done
-    if ((connected >= minimum)); then
-      log "${connected} external DRM connector(s) are connected"
+    healthy=$(healthy_external_connector_count)
+    if ((healthy >= minimum)); then
+      notify_display_consumers
+      log "${healthy} healthy external DRM connector(s) appeared"
       return 0
     fi
-    sleep "$delay"
   done
-  log "fewer than ${minimum} external DRM connector(s) appeared; preserving the failed state for diagnosis"
+  log "fewer than ${minimum} healthy external DRM connector(s) appeared; preserving the failed state for diagnosis"
   return 1
 }
 
@@ -232,7 +281,7 @@ Commands:
   snapshot [LABEL]            Save a root-only diagnostic bundle under /var/log
   dynamic-debug on|off        Toggle relevant kernel dynamic-debug callsites
   trace on|off                Toggle available display-link tracepoint groups
-  repair [TRIES] [DELAY] [N]  Retry rescans until N external DRM connectors appear
+  repair [TRIES] [DELAY] [N]  Retry rescans until N external DRM connectors have modes and EDIDs
 EOF
 }
 
