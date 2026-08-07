@@ -26,11 +26,21 @@ let
     ./0001-overview-allow-targeting-active-output.patch
     ./0002-screencast-accept-remote-desktop-sessions.patch
   ];
+  niriVendorPatches = [
+    ./0003-smithay-release-vanished-connector-crtcs.patch
+  ];
+  allNiriPatches = niriPatches ++ niriVendorPatches;
   niriPatchVersionSuffix = lib.concatMapStrings (
     patch: "\n+ ${builtins.baseNameOf (toString patch)}"
-  ) niriPatches;
+  ) allNiriPatches;
   niriWithScopedOverview = pkgs.niri.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ niriPatches;
+    postPatch = (old.postPatch or "") + ''
+      smithayDrmExtras="$cargoDepsCopy/source-git-0/smithay-drm-extras-0.1.0"
+      ${lib.concatMapStringsSep "\n" (
+        patch: "patch -d \"$smithayDrmExtras\" -p1 < ${patch}"
+      ) niriVendorPatches}
+    '';
     env = (old.env or { }) // {
       NIRI_BUILD_PATCHES = niriPatchVersionSuffix;
     };
