@@ -159,7 +159,9 @@ in
         ExecStartPre = applyPowerPolicy;
         ExecStart = recoveryCommand;
         SuccessExitStatus = [ 1 ];
-        TimeoutStartSec = toString ((cfg.attempts * cfg.delaySeconds) + 30);
+        # Recovery runs udev settles after each rescan. Failure snapshots also
+        # probe every DDC bus, so the timeout must include both operations.
+        TimeoutStartSec = "5min";
       };
     };
   };
