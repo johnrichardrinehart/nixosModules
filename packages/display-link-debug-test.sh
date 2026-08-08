@@ -8,8 +8,9 @@ sys="$root/sys"
 proc="$root/proc"
 dev="$root/dev"
 logs="$root/logs"
-mkdir -p "$sys/class/drm" "$sys/bus/pci/devices" "$sys/bus/thunderbolt/devices" \
+mkdir -p "$sys/class/drm/card0" "$sys/bus/pci/devices" "$sys/bus/thunderbolt/devices" \
   "$sys/module" "$sys/kernel/debug/dri" "$proc/dynamic_debug" "$dev" "$logs"
+printf 'none\n' >"$sys/class/drm/card0/uevent"
 printf 'test-kernel-arguments\n' >"$proc/cmdline"
 printf '\n' >"$proc/dynamic_debug/control"
 
@@ -30,6 +31,12 @@ connector() {
   printf '%s\n' "$enabled" >"$sys/class/drm/$name/enabled"
   : >"$sys/class/drm/$name/modes"
   : >"$sys/class/drm/$name/edid"
+}
+
+make_healthy() {
+  local name=$1
+  printf '2560x1440\n' >"$sys/class/drm/$name/modes"
+  printf 'mock-edid\n' >"$sys/class/drm/$name/edid"
 }
 
 assert_contains() {
@@ -59,12 +66,33 @@ assert_contains "$output" 'Kernel DRM sees an external connector'
 
 mkdir -p "$sys/bus/thunderbolt/devices/domain0"
 printf '0\n' >"$sys/bus/thunderbolt/devices/domain0/rescan"
-run repair 1 0 2
+if run repair 1 0 2; then
+  echo 'repair accepted connected connectors without modes or EDIDs' >&2
+  exit 1
+fi
 [[ $(<"$sys/bus/thunderbolt/devices/domain0/rescan") == 1 ]]
+
+printf '0\n' >"$sys/bus/thunderbolt/devices/domain0/rescan"
+(
+  sleep 0.1
+  make_healthy card0-DP-1
+  make_healthy card0-DP-2
+) &
+run repair 1 1 2
+[[ $(<"$sys/bus/thunderbolt/devices/domain0/rescan") == 0 ]]
+[[ $(<"$sys/class/drm/card0-DP-1/status") == connected ]]
+[[ $(<"$sys/class/drm/card0-DP-2/status") == connected ]]
+[[ $(<"$sys/class/drm/card0/uevent") == change ]]
+
+printf 'none\n' >"$sys/class/drm/card0/uevent"
+printf '0\n' >"$sys/bus/thunderbolt/devices/domain0/rescan"
+run repair 1 0 2
+[[ $(<"$sys/bus/thunderbolt/devices/domain0/rescan") == 0 ]]
+[[ $(<"$sys/class/drm/card0/uevent") == none ]]
 
 printf 'disconnected\n' >"$sys/class/drm/card0-DP-2/status"
 if run repair 1 0 2; then
-  echo 'repair unexpectedly succeeded with fewer than two external connectors' >&2
+  echo 'repair unexpectedly succeeded with fewer than two healthy external connectors' >&2
   exit 1
 fi
 
