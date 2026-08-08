@@ -789,9 +789,9 @@ binds {
     Mod+Alt+S {
         spawn "@niri_screenshot@" "region-wormhole"
     }
-    // View clipboard history
+    // View clipboard history with automatic image previews.
     Mod+Shift+C {
-        spawn-sh "cliphist list | fuzzel --width 100 --dmenu | cliphist decode | wl-copy"
+        spawn "@cliphist_picker@"
     }
     // Applications such as remote-desktop clients and software KVM switches may
     // request that niri stops processing the keyboard shortcuts defined here

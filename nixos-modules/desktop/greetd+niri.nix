@@ -60,6 +60,9 @@ let
   clipboard-watch = pkgs.dev.johnrinehart.clipboard-watch.override {
     inherit clipboard-store-notify;
   };
+  cliphist-picker = pkgs.dev.johnrinehart.cliphist-picker.override {
+    niri = config.programs.niri.package;
+  };
 
   # Wallpaper, served by awww. The daemon creates surfaces for hotplugged
   # outputs, but initializes them to black rather than inheriting the current
@@ -268,6 +271,7 @@ in
         pkgs.adwaita-icon-theme # cursor theme
         pkgs.alacritty
         pkgs.brightnessctl
+        cliphist-picker
         pkgs.cliphist
         pkgs.dev.johnrinehart.fuzzel_1_14_1
         pkgs.grim
@@ -295,6 +299,7 @@ in
           replacements = {
             fuzzel_dmenu = lib.getExe fuzzelDmenu;
             clipboard_watch = lib.getExe clipboard-watch;
+            cliphist_picker = lib.getExe cliphist-picker;
             swww_wallpaper = "${awww-wallpaper}";
             input_toggle_notify = lib.getExe input-toggle-notify;
             keyboard_brightness_notify = lib.getExe keyboard-brightness-notify;
