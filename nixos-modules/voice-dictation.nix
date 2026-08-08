@@ -244,6 +244,10 @@ in
         ExecReload = "${cfg.package}/bin/whisper-voice-type reload";
         Restart = "always";
         RestartSec = "2s";
+        # Let the daemon handle SIGTERM before its capture child sees EOF.
+        KillMode = "mixed";
+        # Do not let a stuck inference call block graphical-session teardown.
+        TimeoutStopSec = "10s";
       };
 
       Install.WantedBy = [ "graphical-session.target" ];

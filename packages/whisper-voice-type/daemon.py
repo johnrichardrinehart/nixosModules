@@ -480,12 +480,14 @@ signal.signal(signal.SIGUSR1, _on_sigusr1)
 def _restart_daemon(reason):
     if _shutting_down:
         os._exit(0)
-    log_msg(f"{reason}; restarting daemon")
+    log_msg(f"{reason}; exiting for service restart")
     try:
         notify_msg("Moonshine restarting", reason, timeout=2500, urgency="normal")
     except Exception:
         pass
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    # A worker can reach this while SIGTERM awaits the Python main thread.
+    # Replacing the process would discard that signal and defeat the stop job.
+    os._exit(1)
 
 
 _prev = ""
