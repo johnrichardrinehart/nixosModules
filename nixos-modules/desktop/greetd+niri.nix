@@ -26,11 +26,28 @@ let
     ./0001-overview-allow-targeting-active-output.patch
     ./0002-screencast-accept-remote-desktop-sessions.patch
   ];
+  niriDependencyPatches = [
+    ./0003-niri-pin-smithay-drm-extras-crtc-recovery.patch
+  ];
+  allNiriPatches = niriPatches ++ niriDependencyPatches;
   niriPatchVersionSuffix = lib.concatMapStrings (
     patch: "\n+ ${builtins.baseNameOf (toString patch)}"
-  ) niriPatches;
+  ) allNiriPatches;
   niriWithScopedOverview = pkgs.niri.overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ niriPatches;
+    patches = (old.patches or [ ]) ++ allNiriPatches;
+
+    # A connected connector can initially have no free compatible CRTC. If a
+    # later scan releases one, Smithay can map the connector without a state or
+    # mode change, so Niri receives no event and never records the new mapping.
+    # Pin https://github.com/Smithay/smithay/pull/2125 until Niri consumes it.
+    # The pinned commit also includes the DP-MST stale-reservation fix from
+    # https://github.com/Smithay/smithay/pull/2076.
+    cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+      name = "${old.pname}-${old.version}";
+      inherit (old) src;
+      patches = (old.cargoPatches or [ ]) ++ niriDependencyPatches;
+      hash = "sha256-PB5P3h8ZA9kPTFEbQMpA/ms/k+kejvTqTgqSoXcgK/w=";
+    };
     env = (old.env or { }) // {
       NIRI_BUILD_PATCHES = niriPatchVersionSuffix;
     };
