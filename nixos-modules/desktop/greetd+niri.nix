@@ -200,6 +200,7 @@ in
         };
       };
       waybar = {
+        systemd.enable = lib.mkEnableOption "Waybar systemd service";
         connectivityInterfacePattern = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -237,6 +238,23 @@ in
     services.greetd.settings.default_session = {
       command = "${lib.getExe' config.programs.niri.package "niri-session"}";
       user = primaryUser;
+    };
+
+    systemd.user.services.waybar = lib.mkIf cfg.waybar.systemd.enable {
+      description = "Wayland bar";
+      wantedBy = [ "niri.service" ];
+      wants = [ "pipewire-pulse.service" ];
+      after = [
+        "niri.service"
+        "pipewire-pulse.service"
+      ];
+      partOf = [ "graphical-session.target" ];
+      requisite = [ "graphical-session.target" ];
+      serviceConfig = {
+        ExecStart = lib.getExe pkgs.waybar;
+        Restart = "on-failure";
+        RestartSec = "1s";
+      };
     };
 
     systemd.user.services.niri-remote-desktop = {
