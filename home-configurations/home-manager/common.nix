@@ -295,6 +295,7 @@ in
 
     programs.git = {
       enable = true;
+      package = pkgs.dev.johnrinehart.git-local-namespace;
       settings = {
         user = {
           name = "John Rinehart";

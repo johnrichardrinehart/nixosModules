@@ -31,7 +31,7 @@ in
         pkgs.bc
         pkgs.htop
         pkgs.tree
-        pkgs.git
+        pkgs.dev.johnrinehart.git-local-namespace
         pkgs.dev.johnrinehart.repo-manager
       ];
     })
