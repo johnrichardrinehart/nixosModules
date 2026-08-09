@@ -6,8 +6,8 @@ git.overrideAttrs (old: {
   patches = (old.patches or [ ]) ++ [
     (fetchpatch2 {
       name = "git-local-namespace.patch";
-      url = "https://github.com/johnrichardrinehart/git/compare/master...48926315e0f449dc48f8e515cc3043712e2f87f5.patch?full_index=1";
-      hash = "sha256-zcmTjyGsuc51zbOvgLWTQx33fGayLmTapTnIUVaWOQg=";
+      url = "https://github.com/johnrichardrinehart/git/compare/master...08fb0de2c83ab27c651312c3a87e4ef7c2c62c00.patch?full_index=1";
+      hash = "sha256-C5PCdH046LdNgsKccblHrvXDy/BczWB3JyTQ5nGMDDI=";
     })
   ];
 })
