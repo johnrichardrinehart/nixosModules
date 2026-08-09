@@ -89,6 +89,11 @@ in
       createWheelUser = lib.mkEnableOption "a dedicated pi user with wheel access";
     };
 
+    primeAgent = {
+      enable = lib.mkEnableOption "Prime Agent";
+      createWheelUser = lib.mkEnableOption "a dedicated prime-agent user with wheel access";
+    };
+
     codexCli = {
       enable = lib.mkEnableOption "Codex CLI";
       createWheelUser = lib.mkEnableOption "a dedicated codex user with wheel access";
@@ -132,6 +137,7 @@ in
     (lib.mkIf cfg.enable {
       dev.johnrinehart.agentTools = {
         pi.enable = lib.mkDefault true;
+        primeAgent.enable = lib.mkDefault true;
         codexCli.enable = lib.mkDefault true;
         claudeCodeCli.enable = lib.mkDefault true;
       };
@@ -146,6 +152,15 @@ in
     })
     (lib.mkIf (cfg.pi.enable && cfg.pi.createWheelUser) {
       users.users.pi = {
+        isNormalUser = true;
+        extraGroups = [ "wheel" ];
+      };
+    })
+    (lib.mkIf cfg.primeAgent.enable {
+      environment.systemPackages = [ pkgs.dev.johnrinehart.prime-agent-nix ];
+    })
+    (lib.mkIf (cfg.primeAgent.enable && cfg.primeAgent.createWheelUser) {
+      users.users."prime-agent" = {
         isNormalUser = true;
         extraGroups = [ "wheel" ];
       };

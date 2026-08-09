@@ -20,6 +20,7 @@ let
     };
   profile = (evaluate { enable = true; }).config;
   piOnly = (evaluate { pi.enable = true; }).config;
+  primeAgentOnly = (evaluate { primeAgent.enable = true; }).config;
   codexOnly = (evaluate { codexCli.enable = true; }).config;
   claudeOnly = (evaluate { claudeCodeCli.enable = true; }).config;
   omxProfile = (evaluate { "oh-my-codex".enable = true; }).config;
@@ -31,6 +32,10 @@ let
   dedicatedUsers =
     (evaluate {
       pi = {
+        enable = true;
+        createWheelUser = true;
+      };
+      primeAgent = {
         enable = true;
         createWheelUser = true;
       };
@@ -52,21 +57,30 @@ let
 in
 assert builtins.all (name: builtins.elem name (packageNames profile)) [
   "pi"
+  "prime-agent"
   "codex-cli-nix"
   "claude-code-nix"
 ];
 assert !(profile.users.users ? pi);
+assert !(builtins.hasAttr "prime-agent" profile.users.users);
 assert !(profile.users.users ? codex);
 assert !(profile.users.users ? claude);
 assert builtins.elem "pi" (packageNames piOnly);
+assert !(builtins.elem "prime-agent" (packageNames piOnly));
 assert !(builtins.elem "codex-cli-nix" (packageNames piOnly));
 assert !(builtins.elem "claude-code-nix" (packageNames piOnly));
+assert builtins.elem "prime-agent" (packageNames primeAgentOnly);
+assert !(builtins.elem "pi" (packageNames primeAgentOnly));
+assert !(builtins.elem "codex-cli-nix" (packageNames primeAgentOnly));
+assert !(builtins.elem "claude-code-nix" (packageNames primeAgentOnly));
 assert builtins.elem "codex-cli-nix" (packageNames codexOnly);
 assert !(builtins.elem "pi" (packageNames codexOnly));
+assert !(builtins.elem "prime-agent" (packageNames codexOnly));
 assert !(builtins.elem "claude-code-nix" (packageNames codexOnly));
 assert codexOnly.environment.etc ? "codex/config.toml";
 assert builtins.elem "claude-code-nix" (packageNames claudeOnly);
 assert !(builtins.elem "pi" (packageNames claudeOnly));
+assert !(builtins.elem "prime-agent" (packageNames claudeOnly));
 assert !(builtins.elem "codex-cli-nix" (packageNames claudeOnly));
 assert builtins.elem "codex-cli-nix" (packageNames omxProfile);
 assert builtins.elem "oh-my-codex" (packageNames omxProfile);
@@ -80,6 +94,7 @@ assert builtins.any (
 assert !(invalidOmxProfile.environment.etc ? "codex/config.toml");
 assert !(invalidOmxProfile.environment.etc ? "codex/hooks.json");
 assert hasWheelUser "pi" dedicatedUsers;
+assert hasWheelUser "prime-agent" dedicatedUsers;
 assert hasWheelUser "codex" dedicatedUsers;
 assert hasWheelUser "claude" dedicatedUsers;
 pkgs.runCommand "agent-tools-module-evaluation" { } ''

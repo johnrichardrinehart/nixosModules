@@ -82,6 +82,10 @@
                 checks = {
                   pre-commit = preCommitCheck;
                   formatting = treefmtEval.config.build.check inputs.self;
+                  agent-tools-module = import ./nix/checks/agent-tools-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                   daylight-display-module = import ./nix/checks/daylight-display-module.nix {
                     inherit inputs pkgs;
                     inherit (inputs.nixpkgs) lib;
