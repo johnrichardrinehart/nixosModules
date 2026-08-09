@@ -50,6 +50,45 @@ in
     home-manager.users.${primaryUser} = {
       xdg.configFile."repo-manager/config.json".source = configFile;
 
+      # Git stores repo-manager fork branches under custom refs, so Oh My Zsh
+      # cannot show their short names. Add the display fix only with Oh My Zsh.
+      programs.zsh.initContent =
+        lib.mkIf config.home-manager.users.${primaryUser}.programs.zsh.oh-my-zsh.enable
+          (
+            lib.mkAfter ''
+              # Preserve glg's git log --stat behavior and label ref kinds
+              # so namespaces and remotes remain distinct.
+              unalias glg 2>/dev/null || true
+              glg() {
+                local color=never
+                local branch_color=""
+                local namespace_color=""
+                local remote_color=""
+                local -a pager
+                if [[ -t 1 ]]; then
+                  color=always
+                  branch_color=$(git config --get-color color.decorate.branch 'green bold')
+                  namespace_color=$(git config --get-color color.decorate.branch 'green bold')
+                  remote_color=$(git config --get-color color.decorate.remoteBranch 'cyan')
+                  pager=(less -R)
+                else
+                  pager=(cat)
+                fi
+
+                git log --stat --color="$color" --decorate=full \
+                  --decorate-refs='refs/*' "$@" |
+                  sed -E \
+                    -e "s#refs/namespaces/([^/]+)/refs/heads/#''${namespace_color}namespace/\\1/#g" \
+                    -e "s#refs/repo-manager/[^[:space:],)]*/remotes/([^/]+)/#''${remote_color}remote/fork/\\1/#g" \
+                    -e "s#refs/repo-manager/[^[:space:],)]*/heads/#''${namespace_color}namespace/fork/#g" \
+                    -e "s#refs/remotes/([^/]+)/#''${remote_color}remote/\\1/#g" \
+                    -e "s#refs/heads/#''${branch_color}#g" \
+                    -e "s#refs/tmp/#''${namespace_color}namespace/tmp/#g" |
+                  "''${pager[@]}"
+              }
+            ''
+          );
+
       systemd.user.services.repod = lib.mkIf cfg.daemon.enable {
         Unit = {
           Description = "repo-manager RPC daemon";
