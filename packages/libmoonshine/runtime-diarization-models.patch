@@ -1,104 +1,35 @@
-diff -rN -U0 a/CMakeLists.txt b/CMakeLists.txt
---- a/CMakeLists.txt	2026-07-30 10:01:13.434719296 -0400
-+++ b/CMakeLists.txt	2026-07-30 10:02:16.124096295 -0400
-@@ -131 +130,0 @@
--    ${CPP_ANNOTE_DIR}/src/community1_ort_embedded.cpp
-@@ -204,0 +204,7 @@
-+
-+if(NOT MOONSHINE_DIARIZATION_MODEL_DIR)
-+    message(FATAL_ERROR "MOONSHINE_DIARIZATION_MODEL_DIR must point to the cpp-annote model directory")
-+endif()
-+target_compile_definitions(moonshine PRIVATE
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -203,6 +203,10 @@
+     )
+ endif()
+
++add_compile_definitions(
 +    MOONSHINE_DIARIZATION_MODEL_DIR="${MOONSHINE_DIARIZATION_MODEL_DIR}"
 +)
-diff -rN -U0 a/cpp-annote/src/cpp-annote.cpp b/cpp-annote/src/cpp-annote.cpp
---- a/cpp-annote/src/cpp-annote.cpp	2026-07-30 10:01:13.499528608 -0400
-+++ b/cpp-annote/src/cpp-annote.cpp	2026-07-30 10:02:16.125085532 -0400
-@@ -28 +27,0 @@
--#include "community1_ort_embedded.h"
-@@ -489,0 +489,21 @@
-+std::string default_model_path(const char *filename) {
-+  const char *override_dir = std::getenv("MOONSHINE_DIARIZATION_MODEL_DIR");
-+  const std::filesystem::path model_dir =
-+      override_dir != nullptr && override_dir[0] != '\0'
-+          ? std::filesystem::path(override_dir)
-+          : std::filesystem::path(MOONSHINE_DIARIZATION_MODEL_DIR);
-+  return (model_dir / filename).string();
-+}
 +
-+std::string read_model_metadata(const std::string &model_path) {
-+  std::filesystem::path metadata_path(model_path);
-+  metadata_path.replace_extension(".json");
-+  std::ifstream input(metadata_path);
-+  if (!input) {
-+    throw std::runtime_error("unable to open diarization metadata: " +
-+                             metadata_path.string());
-+  }
-+  return std::string(std::istreambuf_iterator<char>(input),
-+                     std::istreambuf_iterator<char>());
-+}
-+
-@@ -493,9 +513,2 @@
--  if (!path.empty()) {
--    // path::c_str() yields ORTCHAR_T (wchar_t on Windows, char elsewhere), as
--    // required by the Ort::Session constructor.
--    const std::filesystem::path model_path = path;
--    return Ort::Session(env, model_path.c_str(), opts);
--  }
--  return Ort::Session(
--      env, cppannote::embedded_community1::segmentation_ort_data,
--      cppannote::embedded_community1::segmentation_ort_data_size, opts);
-+  const std::filesystem::path model_path = path;
-+  return Ort::Session(env, model_path.c_str(), opts);
-@@ -506,7 +519,2 @@
--  if (!path.empty()) {
--    const std::filesystem::path model_path = path;
--    return std::make_unique<Ort::Session>(env, model_path.c_str(), opts);
--  }
--  return std::make_unique<Ort::Session>(
--      env, cppannote::embedded_community1::embedding_ort_data,
--      cppannote::embedded_community1::embedding_ort_data_size, opts);
-+  const std::filesystem::path model_path = path;
-+  return std::make_unique<Ort::Session>(env, model_path.c_str(), opts);
-@@ -515,0 +524 @@
-+    const std::string &segmentation_onnx_path,
-@@ -517,3 +526 @@
--  const std::string seg_json(
--      cppannote::embedded_community1::segmentation_json,
--      cppannote::embedded_community1::segmentation_json_size);
-+  const std::string seg_json = read_model_metadata(segmentation_onnx_path);
-@@ -566,3 +573 @@
--    const std::string emb_json(
--        cppannote::embedded_community1::embedding_json,
--        cppannote::embedded_community1::embedding_json_size);
-+    const std::string emb_json = read_model_metadata(embedding_onnx_path);
-@@ -606,9 +611,3 @@
--    : ort_env_(ORT_LOGGING_LEVEL_WARNING, "cppannote"),
--      session_options_{},
--      session_(make_segmentation_session(ort_env_, session_options_, "")),
--      mem_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)),
--      alloc_{},
--      in_name_(session_.GetInputNameAllocated(0, alloc_)),
--      out_name_(session_.GetOutputNameAllocated(0, alloc_)) {
--  init_config_and_models("");
--}
-+    : CppAnnoteEngine(
-+          default_model_path("community1-segmentation.onnx"),
-+          default_model_path("community1-embedding.onnx")) {}
-@@ -626 +625 @@
--  init_config_and_models(embedding_onnx_path);
-+  init_config_and_models(segmentation_onnx_path, embedding_onnx_path);
-diff -rN -U0 a/cpp-annote/src/cpp-annote-engine.h b/cpp-annote/src/cpp-annote-engine.h
---- a/cpp-annote/src/cpp-annote-engine.h	2026-07-30 10:01:13.539718592 -0400
-+++ b/cpp-annote/src/cpp-annote-engine.h	2026-07-30 10:02:16.124618285 -0400
-@@ -140 +140,2 @@
--  void init_config_and_models(const std::string& embedding_onnx_path);
-+  void init_config_and_models(const std::string& segmentation_onnx_path,
-+                              const std::string& embedding_onnx_path);
-diff -rN -U0 a/moonshine-c-api.cpp b/moonshine-c-api.cpp
---- a/moonshine-c-api.cpp	2026-07-30 10:01:13.470841501 -0400
-+++ b/moonshine-c-api.cpp	2026-07-30 10:02:16.124475361 -0400
-@@ -56,0 +57 @@
-+#if MOONSHINE_C_API_MOONSHINE_TTS
-@@ -57,0 +59 @@
-+#endif
+ set_target_properties(moonshine PROPERTIES
+     CXX_STANDARD 20
+     CXX_STANDARD_REQUIRED YES
+--- a/transcriber.cpp
++++ b/transcriber.cpp
+@@ -76,7 +76,9 @@
+   if (!explicit_model.path.empty()) {
+     return explicit_model;
+   }
+-  if (model_dir.empty()) {
++  const std::string effective_model_dir =
++      model_dir.empty() ? MOONSHINE_DIARIZATION_MODEL_DIR : model_dir;
++  if (effective_model_dir.empty()) {
+     throw std::runtime_error(
+         std::string("identify_speakers needs the diarization models, which are "
+                     "downloaded rather than built in. Set the "
+@@ -86,7 +88,7 @@
+         filename + ". See docs/diarization-models.md.");
+   }
+   SpeakerDiarizerModel resolved;
+-  resolved.path = (std::filesystem::path(model_dir) / filename).string();
++  resolved.path = (std::filesystem::path(effective_model_dir) / filename).string();
+   if (!std::filesystem::exists(resolved.path)) {
+     throw std::runtime_error("Diarization model not found: " + resolved.path +
+                              ". Download it with the manifest from "

@@ -52,11 +52,11 @@ let
   audioProvider = normalizeProvider defaultOpenVINO (executionProviders.audio or { });
   decoderProvider = normalizeProvider defaultOpenVINO (executionProviders.decoder or { });
   pldaData = fetchurl {
-    url = "https://raw.githubusercontent.com/moonshine-ai/cpp-annote/50b39685e8ea1f651752aa5a196783fb0a3fe0d9/src/community1_cpp_annote_embedded.cpp";
-    hash = "sha256-YmAsnS4cler03Y4tC/wYsUeitXjbVQ330CbM9luX25c=";
+    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v0.1.1/core/cpp-annote/src/community1_cpp_annote_embedded.cpp";
+    hash = "sha256-lCTaQXazPmfkAA6ip3bWS2p47pu/ctQEBftoBdEnWMQ=";
   };
   zipVoiceData = fetchurl {
-    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v0.1.0/core/moonshine-tts/src/zipvoice-voices-data.cpp";
+    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v0.1.1/core/moonshine-tts/src/zipvoice-voices-data.cpp";
     hash = "sha256-8+TWLK6TxGXh3oUhvFcGuaIPg0y783QEvwPw013/oBI=";
   };
   usesOpenVINO = audioProvider.provider == "openvino" || decoderProvider.provider == "openvino";
@@ -78,19 +78,16 @@ assert lib.assertMsg (builtins.elem decoderProvider.provider providerNames)
   "libmoonshine executionProviders.decoder.provider must be one of: ${lib.concatStringsSep ", " providerNames}";
 stdenv.mkDerivation {
   pname = "libmoonshine";
-  version = "0.1.0";
+  version = "0.1.1";
 
   src = fetchFromGitHub {
     owner = "moonshine-ai";
     repo = "moonshine";
-    tag = "v0.1.0";
+    tag = "v0.1.1";
     sparseCheckout = [ "core" ];
-    hash = "sha256-SwqUnBBiA+un/wWSHpisW21gSgDJtPRc/UmcnLbyy5g=";
+    hash = "sha256-EWB/OPcT/yvFCidqnMWaVXTbH0r6kReYgs9+nwFD2ss=";
   };
 
-  # Upstream accepts explicit cpp-annote ONNX paths, but Moonshine uses the
-  # no-argument engine constructor, which loads generated Git LFS byte arrays.
-  # Make that constructor use separately packaged runtime models instead.
   patches = [ ./runtime-diarization-models.patch ];
 
   sourceRoot = "source/core";

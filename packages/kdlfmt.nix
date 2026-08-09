@@ -13,8 +13,8 @@ let
   kdl-rs = fetchFromGitHub {
     owner = "johnrichardrinehart";
     repo = "kdl-rs";
-    rev = "f3b0eb88841430623208fb2a77a270d2df432ddd";
-    hash = "sha256-EBuidVvvZmHhqWESmfdk8ZZN3UCGmI1lwZ3i9O9qTCU=";
+    rev = "d4ad4e8d22886a47a79d1cb99d5cdaa6b927bef1";
+    hash = "sha256-HBAq3aSQ53EnBDV+1yMh89K5catwCQcy0qMdoFuLsIs=";
   };
   kdl-rs-cargo-patch = writeText "kdlfmt-kdl-rs.patch" ''
     diff --git a/Cargo.lock b/Cargo.lock
@@ -35,10 +35,10 @@ let
      [[package]]
      name = "winnow"
     -version = "0.6.24"
-    +version = "0.7.15"
+    +version = "1.0.4"
      source = "registry+https://github.com/rust-lang/crates.io-index"
     -checksum = "c8d71a593cc5c42ad7876e2c1fda56f314f3754c084128833e64f1345ff8a03a"
-    +checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+    +checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
      dependencies = [
       "memchr",
      ]
@@ -63,7 +63,7 @@ rustPlatform.buildRustPackage {
   inherit (kdlfmt) version src;
 
   cargoPatches = [ kdl-rs-cargo-patch ];
-  cargoHash = "sha256-vidVK7wrj1D8n20dZ6uQGkpepuk3yMnylbwGXubkzMU=";
+  cargoHash = "sha256-+F/XG2mmamqcoPJsOuInU7USmeQyNT3mFIpgAdRaTzs=";
 
   nativeBuildInputs = [ installShellFiles ];
 

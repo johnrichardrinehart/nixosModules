@@ -7,16 +7,16 @@
 }:
 rustPlatform.buildRustPackage rec {
   pname = "herdr";
-  version = "0.7.5";
+  version = "0.8.0";
 
   src = fetchFromGitHub {
     owner = "herdrdev";
     repo = "herdr";
     tag = "v${version}";
-    hash = "sha256-3BA8eredGku+vsL2Af7sUf43QiArR5XTHNrI+X11vFM=";
+    hash = "sha256-empFQ+hrnCh2JhOzQRWSCLV0YoZC3DXW3bY6k8YuJjk=";
   };
 
-  cargoHash = "sha256-lWnc0Ka0hp7bbm+dkKKj22Dbk+Cwrld86romXs3lzBs=";
+  cargoHash = "sha256-E1lBgpTFZwNjeALeg/atwbDFL/XQbUnvCdX7ohbAHAc=";
 
   zigDeps = callPackage "${src}/vendor/libghostty-vt/build.zig.zon.nix" {
     name = "${pname}-${version}-zig-cache";

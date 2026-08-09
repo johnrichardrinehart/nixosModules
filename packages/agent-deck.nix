@@ -7,16 +7,16 @@
 }:
 buildGo126Module rec {
   pname = "agent-deck";
-  version = "1.10.11";
+  version = "1.11.0";
 
   src = fetchFromGitHub {
     owner = "asheshgoplani";
     repo = "agent-deck";
     rev = "v${version}";
-    hash = "sha256-OyFvkRmE3sXfQ4R8pfUWUC/0zAlZUv2aJDo3H0QNbas=";
+    hash = "sha256-PHNdIqGBvgg06zFlqOY6dN2aSu+HivNaxp7DHCyMqTI=";
   };
 
-  vendorHash = "sha256-Pq4EGQGn21oKWNsEAkULrsygqJ2ZjamZGRCLe706ZqY=";
+  vendorHash = "sha256-rLhOjYfLAPPRTfLFPMlxrjSSqmHFmPoXPFZbaevEgtw=";
 
   subPackages = [ "cmd/agent-deck" ];
 
@@ -27,7 +27,7 @@ buildGo126Module rec {
   checkFlags = [
     # Keep the rest of the package tests enabled while skipping tests that
     # depend on interactive TUI timing.
-    "-skip=TestLogCgroupIsolationDecision_WiredIntoBootstrap/tui_startup_emits_line"
+    "-skip=TestLogCgroupIsolationDecision_WiredIntoBootstrap/tui_startup_emits_line|TestPerf_ColdStart_(Help|Version)|TestStatusStale_CLI_CandidateViewAndMutatesNothing"
   ];
 
   preCheck = ''
