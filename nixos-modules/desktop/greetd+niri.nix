@@ -224,6 +224,13 @@ in
 
     programs.niri.enable = true;
 
+    # Use Nautilus through the GNOME portal for file chooser grid view.
+    xdg.portal = {
+      enable = true;
+      extraPortals = [ pkgs.xdg-desktop-portal-gnome ];
+      config.niri."org.freedesktop.impl.portal.FileChooser" = "gnome";
+    };
+
     # Keep nixpkgs' niri derivation and vendored dependencies, adding only the
     # active-workspace overview configuration patch.
     programs.niri.package = niriWithScopedOverview;
@@ -304,6 +311,7 @@ in
         wormhole-send
         pkgs.magic-wormhole-rs
         pkgs.adwaita-icon-theme # cursor theme
+        pkgs.nautilus
         pkgs.alacritty
         pkgs.brightnessctl
         cliphist-picker
