@@ -320,6 +320,10 @@ in
       enable = true;
       font.size = 12;
       font.name = "Fira Mono Medium for Powerline";
+      keybindings = {
+        "ctrl+alt+up" = "send_text all \\x1b[<64;10;10M";
+        "ctrl+alt+down" = "send_text all \\x1b[<65;10;10M";
+      };
       extraConfig = ''
         hide_window_decorations yes
         enable_audio_bell no
