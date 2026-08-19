@@ -33,7 +33,7 @@ class Bounds:
     height: int
 
 
-def desktop_bounds() -> Bounds:
+def active_outputs() -> dict[str, Bounds]:
     completed = subprocess.run(
         ["@niri@", "msg", "--json", "outputs"],
         check=True,
@@ -42,17 +42,30 @@ def desktop_bounds() -> Bounds:
         timeout=5,
     )
     outputs = json.loads(completed.stdout)
-    logical = [item.get("logical") for item in outputs.values()]
-    active = [item for item in logical if item is not None]
-    if not active:
+    result = {
+        name: Bounds(
+            int(item["x"]),
+            int(item["y"]),
+            int(item["width"]),
+            int(item["height"]),
+        )
+        for name, output in outputs.items()
+        if (item := output.get("logical")) is not None
+    }
+    if not result:
         raise RuntimeError("Niri returned no active logical outputs")
-    left = min(int(item["x"]) for item in active)
-    top = min(int(item["y"]) for item in active)
-    right = max(int(item["x"]) + int(item["width"]) for item in active)
-    bottom = max(int(item["y"]) + int(item["height"]) for item in active)
-    if right <= left or bottom <= top:
+    if any(bounds.width <= 0 or bounds.height <= 0 for bounds in result.values()):
         raise RuntimeError("Niri returned invalid logical output geometry")
-    return Bounds(left, top, right - left, bottom - top)
+    return result
+
+
+def output_for_geometry(outputs: dict[str, Bounds], geometry: Bounds) -> str:
+    matches = [name for name, bounds in outputs.items() if bounds == geometry]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"authorized stream matches {len(matches)} active Niri outputs"
+        )
+    return matches[0]
 
 
 class RemoteSession(ServiceInterface):
@@ -61,9 +74,9 @@ class RemoteSession(ServiceInterface):
         self.bus = bus
         self.path = path
         self.identifier = uuid.uuid4().hex
-        self.helper: asyncio.subprocess.Process | None = None
-        self.bounds: Bounds | None = None
-        self.streams: dict[str, Bounds] = {}
+        self.helpers: dict[str, asyncio.subprocess.Process] = {}
+        self.streams: dict[str, tuple[str, Bounds]] = {}
+        self.started = False
         self.stopped = False
 
     @dbus_property(access=PropertyAccess.READ, name="SessionId")
@@ -72,13 +85,9 @@ class RemoteSession(ServiceInterface):
 
     @method(name="Start")
     async def start(self):
-        if self.stopped or self.helper is not None:
+        if self.stopped:
             return
-        self.bounds = await asyncio.to_thread(desktop_bounds)
-        self.helper = await asyncio.create_subprocess_exec(
-            "@helper@",
-            stdin=asyncio.subprocess.PIPE,
-        )
+        self.started = True
 
     @method(name="Stop")
     async def stop(self):
@@ -86,31 +95,42 @@ class RemoteSession(ServiceInterface):
 
     @method(name="NotifyPointerMotionAbsolute")
     async def notify_pointer_motion_absolute(self, stream: "s", x: "d", y: "d"):
-        if self.stopped or self.helper is None or self.helper.stdin is None:
-            return
-        if not math.isfinite(x) or not math.isfinite(y):
-            return
-        geometry = self.streams.get(stream)
-        if geometry is None:
-            geometry = await self._stream_geometry(stream)
-            self.streams[stream] = geometry
-        bounds = self.bounds
         if (
-            bounds is None
-            or not 0 <= x < geometry.width
-            or not 0 <= y < geometry.height
+            not self.started
+            or self.stopped
+            or not math.isfinite(x)
+            or not math.isfinite(y)
         ):
             return
-        global_x = geometry.x + x
-        global_y = geometry.y + y
-        normalized_x = int(max(0, min(bounds.width - 1, global_x - bounds.x)))
-        normalized_y = int(max(0, min(bounds.height - 1, global_y - bounds.y)))
-        self.helper.stdin.write(
-            f"A {normalized_x} {normalized_y} {bounds.width} {bounds.height}\n".encode()
-        )
-        await self.helper.stdin.drain()
+        target = self.streams.get(stream)
+        if target is None:
+            target = await self._stream_target(stream)
+            self.streams[stream] = target
+        output, geometry = target
+        if not 0 <= x < geometry.width or not 0 <= y < geometry.height:
+            return
+        helper = self.helpers.get(stream)
+        if helper is not None and helper.returncode is not None:
+            self.helpers.pop(stream)
+            helper = None
+        if helper is None:
+            helper = await asyncio.create_subprocess_exec(
+                "@helper@",
+                output,
+                stdin=asyncio.subprocess.PIPE,
+            )
+            self.helpers[stream] = helper
+        if helper.stdin is None:
+            return
+        try:
+            helper.stdin.write(
+                f"A {int(x)} {int(y)} {geometry.width} {geometry.height}\n".encode()
+            )
+            await helper.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            self.helpers.pop(stream, None)
 
-    async def _stream_geometry(self, path: str) -> Bounds:
+    async def _stream_target(self, path: str) -> tuple[str, Bounds]:
         reply = await self.bus.call(
             Message(
                 destination=SCREENCAST_NAME,
@@ -137,7 +157,8 @@ class RemoteSession(ServiceInterface):
         )
         if geometry.width <= 0 or geometry.height <= 0:
             raise RuntimeError("authorized stream has invalid geometry")
-        return geometry
+        outputs = await asyncio.to_thread(active_outputs)
+        return output_for_geometry(outputs, geometry), geometry
 
     @signal(name="Closed")
     def closed(self) -> "":
@@ -147,16 +168,21 @@ class RemoteSession(ServiceInterface):
         if self.stopped:
             return
         self.stopped = True
-        helper = self.helper
-        self.helper = None
-        if helper is not None:
+        helpers = tuple(self.helpers.values())
+        self.helpers.clear()
+        for helper in helpers:
             if helper.stdin is not None:
                 helper.stdin.close()
+        for helper in helpers:
             try:
                 await asyncio.wait_for(helper.wait(), timeout=2)
             except TimeoutError:
                 helper.terminate()
-                await helper.wait()
+                try:
+                    await asyncio.wait_for(helper.wait(), timeout=2)
+                except TimeoutError:
+                    helper.kill()
+                    await helper.wait()
         self.closed()
         self.bus.unexport(self.path)
 
