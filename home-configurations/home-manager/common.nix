@@ -333,10 +333,6 @@ in
         # preventing oh-my-posh prompt garbling in scrollback.
         scrollback_pager less --raw-control-chars +INPUT_LINE_NUMBER
 
-        # Send a newline literal for claude-code CLI
-        # See: https://github.com/anthropics/claude-code/issues/3853
-        map shift+enter send_text all \n
-
         # Send legacy Ctrl+Z for claude-code suspend (kitty protocol workaround)
         # See: https://github.com/anthropics/claude-code/issues/16895#issuecomment-3735957440
         # TODO: Remove once https://github.com/anthropics/claude-code/issues/17377 is fixed
