@@ -5,6 +5,7 @@ SYSFS_ROOT=${DISPLAY_LINK_SYSFS_ROOT:-/sys}
 PROCFS_ROOT=${DISPLAY_LINK_PROCFS_ROOT:-/proc}
 DEV_ROOT=${DISPLAY_LINK_DEV_ROOT:-/dev}
 LOG_ROOT=${DISPLAY_LINK_LOG_ROOT:-/var/log/display-link-debug}
+RUN_ROOT=${DISPLAY_LINK_RUN_ROOT:-/run/display-link-debug}
 TRACE_ROOT=${DISPLAY_LINK_TRACE_ROOT:-$SYSFS_ROOT/kernel/tracing}
 TEST_MODE=${DISPLAY_LINK_TEST_MODE:-0}
 
@@ -214,9 +215,83 @@ notify_display_consumers() {
   udevadm settle --timeout=5 || true
 }
 
+thunderbolt_controller_for_domain() {
+  local domain=$1 path controller
+  path=$(readlink -f "$domain") || return 1
+  controller=$(basename "$(dirname "$path")")
+  [[ $controller =~ ^[[:xdigit:]]{4}:[[:xdigit:]]{2}:[[:xdigit:]]{2}\.[[:xdigit:]]$ ]] || return 1
+  printf '%s\n' "$controller"
+}
+
+reprobe_thunderbolt_controller() {
+  local controller=$1 driver="$SYSFS_ROOT/bus/pci/drivers/thunderbolt"
+  local device="$SYSFS_ROOT/bus/pci/devices/$controller" control='' d3cold=''
+  [[ -e $device || $TEST_MODE == 1 ]] || {
+    log "Thunderbolt controller $controller disappeared before re-probe"
+    return 1
+  }
+  if [[ $TEST_MODE != 1 ]]; then
+    [[ -L $device/driver && $(basename "$(readlink -f "$device/driver")") == thunderbolt ]] || {
+      log "$controller is not bound to the Thunderbolt driver"
+      return 1
+    }
+  fi
+  [[ -w $driver/unbind && -w $driver/bind ]] || {
+    log "Thunderbolt driver bind controls are unavailable"
+    return 1
+  }
+  [[ -r $device/power/control ]] && control=$(<"$device/power/control")
+  [[ -r $device/d3cold_allowed ]] && d3cold=$(<"$device/d3cold_allowed")
+
+  log "re-probing unresponsive Thunderbolt controller $controller"
+  printf '%s\n' "$controller" >"$driver/unbind" || return 1
+  udevadm settle --timeout=5 || true
+  printf '%s\n' "$controller" >"$driver/bind" || return 1
+  udevadm settle --timeout=10 || true
+
+  [[ -n $control && -w $device/power/control ]] && printf '%s\n' "$control" >"$device/power/control"
+  [[ -n $d3cold && -w $device/d3cold_allowed ]] && printf '%s\n' "$d3cold" >"$device/d3cold_allowed"
+}
+
+quiesce_usb_ports() {
+  need_root
+  local port state disabled state_file="$RUN_ROOT/quiesced-usb-ports"
+  install -d -m 0700 "$RUN_ROOT"
+  : >"$state_file.tmp"
+
+  for port in "$SYSFS_ROOT"/bus/usb/devices/usb*/*-0:1.0/usb*-port*; do
+    [[ -r $port/state && -w $port/disable ]] || continue
+    state=$(<"$port/state")
+    disabled=$(<"$port/disable")
+    [[ $state == default && $disabled == 0 ]] || continue
+
+    log "quiescing USB root-hub port ${port#"$SYSFS_ROOT"/} stuck in enumeration"
+    if printf '1\n' >"$port/disable"; then
+      printf '%s\n' "$port" >>"$state_file.tmp"
+    fi
+  done
+
+  mv "$state_file.tmp" "$state_file"
+}
+
+restore_usb_ports() {
+  need_root
+  local port state_file="$RUN_ROOT/quiesced-usb-ports"
+  [[ -r $state_file ]] || return 0
+
+  while IFS= read -r port; do
+    [[ $port == "$SYSFS_ROOT"/* && -w $port/disable ]] || continue
+    log "restoring USB root-hub port ${port#"$SYSFS_ROOT"/}"
+    printf '0\n' >"$port/disable" || true
+  done <"$state_file"
+  rm -f "$state_file"
+}
+
 repair() {
   need_root
-  local attempts=${1:-6} delay=${2:-2} minimum=${3:-1} attempt domain healthy
+  local attempts=${1:-6} delay=${2:-2} minimum=${3:-1} hard_recovery=${4:-}
+  local attempt domain domain_root controller healthy
+  declare -A failed_controllers=()
 
   healthy=$(healthy_external_connector_count)
   if ((healthy >= minimum)); then
@@ -237,10 +312,27 @@ repair() {
       return 0
     fi
 
+    failed_controllers=()
     for domain in "$SYSFS_ROOT"/bus/thunderbolt/devices/domain*/rescan; do
-      [[ -w $domain ]] && printf '1\n' >"$domain" || true
+      [[ -w $domain ]] || continue
+      if ! printf '1\n' >"$domain"; then
+        domain_root=$(dirname "$domain")
+        if controller=$(thunderbolt_controller_for_domain "$domain_root"); then
+          failed_controllers["$controller"]=1
+        fi
+      fi
     done
     udevadm settle --timeout=5 || true
+
+    if [[ $hard_recovery == reprobe && ${#failed_controllers[@]} -gt 0 ]]; then
+      for controller in "${!failed_controllers[@]}"; do
+        reprobe_thunderbolt_controller "$controller" || true
+      done
+      # Re-probe only once. A second failure needs a preserved diagnostic state.
+      hard_recovery=reprobed
+      sleep "$delay"
+    fi
+
     healthy=$(healthy_external_connector_count)
     if ((healthy >= minimum)); then
       notify_display_consumers
@@ -281,7 +373,10 @@ Commands:
   snapshot [LABEL]            Save a root-only diagnostic bundle under /var/log
   dynamic-debug on|off        Toggle relevant kernel dynamic-debug callsites
   trace on|off                Toggle available display-link tracepoint groups
-  repair [TRIES] [DELAY] [N]  Retry rescans until N external DRM connectors have modes and EDIDs
+  repair [TRIES] [DELAY] [N] [reprobe]
+                              Retry rescans; optionally re-probe an NHI whose ICM transport failed
+  quiesce-usb-ports          Disable root-hub ports stuck in device enumeration before sleep
+  restore-usb-ports          Restore root-hub ports disabled before sleep
 EOF
 }
 
@@ -291,7 +386,9 @@ diagnose) diagnose ;;
 snapshot) snapshot "${2:-manual}" ;;
 dynamic-debug) dynamic_debug "${2:-}" ;;
 trace) trace_toggle "${2:-}" ;;
-repair) repair "${2:-6}" "${3:-2}" "${4:-1}" ;;
+repair) repair "${2:-6}" "${3:-2}" "${4:-1}" "${5:-}" ;;
+quiesce-usb-ports) quiesce_usb_ports ;;
+restore-usb-ports) restore_usb_ports ;;
 *)
   usage
   [[ $# -eq 0 ]] || exit 2

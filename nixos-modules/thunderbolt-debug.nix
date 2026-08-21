@@ -58,6 +58,15 @@ in
         S4 failure where the domain survives but its downstream router vanishes.
       '';
     };
+
+    recoverFailedSuspend = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Restart the Thunderbolt domain control channel when the platform NHI
+        suspend operation fails after the driver already stopped that channel.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -88,6 +97,12 @@ in
         {
           name = "thunderbolt-icm-firmware-rescan";
           patch = ../known_problems/thunderbolt-hibernate-displayport-failure/0005-thunderbolt-expose-ICM-device-re-enumeration.patch;
+        }
+      ]
+      ++ lib.optionals cfg.recoverFailedSuspend [
+        {
+          name = "thunderbolt-restart-domain-after-failed-nhi-suspend";
+          patch = ../known_problems/thunderbolt-hibernate-displayport-failure/0006-thunderbolt-restart-domain-after-failed-NHI-suspend.patch;
         }
       ];
 

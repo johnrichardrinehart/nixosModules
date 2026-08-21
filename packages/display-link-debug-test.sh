@@ -20,6 +20,7 @@ run() {
     DISPLAY_LINK_PROCFS_ROOT="$proc" \
     DISPLAY_LINK_DEV_ROOT="$dev" \
     DISPLAY_LINK_LOG_ROOT="$logs" \
+    DISPLAY_LINK_RUN_ROOT="$root/run" \
     DISPLAY_LINK_TRACE_ROOT="$sys/kernel/tracing" \
     "$program" "$@"
 }
@@ -95,6 +96,37 @@ if run repair 1 0 2; then
   echo 'repair unexpectedly succeeded with fewer than two healthy external connectors' >&2
   exit 1
 fi
+
+# A failed ICM rescan identifies its parent NHI and re-probes only that
+# Thunderbolt PCI function when hard recovery is enabled.
+mkdir -p "$sys/devices/pci0000:00/0000:00:0d.3/domain1"
+rm -rf "$sys/bus/thunderbolt/devices/domain0"
+ln -s ../../../devices/pci0000:00/0000:00:0d.3/domain1 \
+  "$sys/bus/thunderbolt/devices/domain1"
+ln -s /dev/full "$sys/devices/pci0000:00/0000:00:0d.3/domain1/rescan"
+mkdir -p "$sys/bus/pci/drivers/thunderbolt"
+: >"$sys/bus/pci/drivers/thunderbolt/unbind"
+: >"$sys/bus/pci/drivers/thunderbolt/bind"
+if run repair 1 0 2 reprobe; then
+  echo 'repair unexpectedly succeeded after a mocked failed re-probe' >&2
+  exit 1
+fi
+[[ $(<"$sys/bus/pci/drivers/thunderbolt/unbind") == 0000:00:0d.3 ]]
+[[ $(<"$sys/bus/pci/drivers/thunderbolt/bind") == 0000:00:0d.3 ]]
+
+# Quiesce only root-hub ports stuck in USB enumeration. Restore the same ports
+# after the sleep transaction completes.
+mkdir -p "$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port2"
+mkdir -p "$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port3"
+printf 'not attached\n' >"$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port2/state"
+printf '0\n' >"$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port2/disable"
+printf 'default\n' >"$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port3/state"
+printf '0\n' >"$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port3/disable"
+run quiesce-usb-ports
+[[ $(<"$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port2/disable") == 0 ]]
+[[ $(<"$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port3/disable") == 1 ]]
+run restore-usb-ports
+[[ $(<"$sys/bus/usb/devices/usb3/3-0:1.0/usb3-port3/disable") == 0 ]]
 
 snapshot=$(run snapshot 'label with spaces')
 [[ $snapshot == "$logs/"*'-label_with_spaces' ]]

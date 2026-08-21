@@ -10,7 +10,7 @@ let
   shellList = values: lib.concatMapStringsSep " " lib.escapeShellArg values;
   recoveryCommand = pkgs.writeShellScript "external-display-recovery" ''
     status=0
-    ${tool} repair ${toString cfg.attempts} ${toString cfg.delaySeconds} ${toString cfg.minimumExternalConnectors} || status=$?
+    ${tool} repair ${toString cfg.attempts} ${toString cfg.delaySeconds} ${toString cfg.minimumExternalConnectors} ${lib.optionalString cfg.reprobeControllers "reprobe"} || status=$?
     ${lib.optionalString cfg.snapshotOnFailure ''
       if (( status != 0 )); then
         ${tool} snapshot automatic-recovery-failure || true
@@ -79,6 +79,18 @@ in
       description = "Run bounded recovery after suspend and hibernate resume.";
     };
 
+    reprobeControllers = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Re-probe only an NHI whose ICM rescan fails because its control channel is unavailable.";
+    };
+
+    quiesceStuckUsbPorts = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Disable root-hub ports stuck in device enumeration before sleep and restore them after resume.";
+    };
+
     powerManagement = {
       pciDevices = lib.mkOption {
         type = lib.types.listOf (
@@ -121,6 +133,13 @@ in
     ];
 
     environment.systemPackages = [ pkgs.dev.johnrinehart.display-link-debug ];
+
+    powerManagement.powerDownCommands = lib.optionalString cfg.quiesceStuckUsbPorts ''
+      ${tool} quiesce-usb-ports
+    '';
+    powerManagement.resumeCommands = lib.optionalString cfg.quiesceStuckUsbPorts ''
+      ${tool} restore-usb-ports
+    '';
 
     services.udev.extraRules = lib.optionalString cfg.onHotplug ''
       ACTION=="add|change", SUBSYSTEM=="thunderbolt", TAG+="systemd", ENV{SYSTEMD_WANTS}+="external-display-recovery.service"
