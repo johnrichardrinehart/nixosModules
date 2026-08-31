@@ -6,6 +6,7 @@
 }:
 let
   cfg = config.dev.johnrinehart.agentTools;
+  ompPackage = pkgs.dev.johnrinehart.omp;
   mkMergedCodexConfig =
     {
       name,
@@ -89,6 +90,8 @@ in
       createWheelUser = lib.mkEnableOption "a dedicated pi user with wheel access";
     };
 
+    omp.enable = lib.mkEnableOption "OMP coding agent";
+
     primeAgent = {
       enable = lib.mkEnableOption "Prime Agent";
       createWheelUser = lib.mkEnableOption "a dedicated prime-agent user with wheel access";
@@ -137,6 +140,7 @@ in
     (lib.mkIf cfg.enable {
       dev.johnrinehart.agentTools = {
         pi.enable = lib.mkDefault true;
+        omp.enable = lib.mkDefault true;
         primeAgent.enable = lib.mkDefault true;
         codexCli.enable = lib.mkDefault true;
         claudeCodeCli.enable = lib.mkDefault true;
@@ -149,6 +153,9 @@ in
     })
     (lib.mkIf cfg.pi.enable {
       environment.systemPackages = [ pkgs.dev.johnrinehart.pi-nix ];
+    })
+    (lib.mkIf cfg.omp.enable {
+      environment.systemPackages = [ ompPackage ];
     })
     (lib.mkIf (cfg.pi.enable && cfg.pi.createWheelUser) {
       users.users.pi = {

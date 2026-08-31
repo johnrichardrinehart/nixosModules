@@ -18,6 +18,11 @@ let
     .codex/
     .codex
     .omx/
+    .omp/
+  '';
+  ompRuntimeConfigPath = "${config.home.homeDirectory}/.omp/agent/runtime-config.yml";
+  emptyOmpRuntimeConfig = pkgs.writeText "omp-runtime-config.yml" ''
+    {}
   '';
   agentDeckConfig = ''
     # Agent Deck Configuration
@@ -234,6 +239,20 @@ in
           });
     };
 
+    # OMP must lock and rewrite its global config file, so install a writable
+    # copy. PI_CONFIG_FILES loads the runtime file afterward as a higher-priority
+    # overlay. Home Manager never replaces that runtime file.
+    home.activation.ompConfig = lib.mkIf osConfig.dev.johnrinehart.agentTools.omp.enable (
+      lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        run mkdir -p "$HOME/.omp/agent"
+        run install -m 600 ${./omp-config.yml} "$HOME/.omp/agent/config.yml"
+        run install -m 600 ${./omp-keybindings.yml} "$HOME/.omp/agent/keybindings.yml"
+        if [[ ! -e "${ompRuntimeConfigPath}" ]]; then
+          run install -m 600 ${emptyOmpRuntimeConfig} "${ompRuntimeConfigPath}"
+        fi
+      ''
+    );
+
     programs.tmux =
       lib.mkIf
         (
@@ -254,6 +273,9 @@ in
     home.sessionVariables = {
       EDITOR = "vim";
       TMUX_TMPDIR = lib.mkForce osConfig.dev.johnrinehart.tmux.socketDir;
+    }
+    // lib.optionalAttrs osConfig.dev.johnrinehart.agentTools.omp.enable {
+      PI_CONFIG_FILES = ompRuntimeConfigPath;
     };
 
     dconf.settings = {
@@ -323,6 +345,8 @@ in
       keybindings = {
         "ctrl+alt+up" = "send_text all \\x1b[<64;10;10M";
         "ctrl+alt+down" = "send_text all \\x1b[<65;10;10M";
+        # Preserve both modifiers for OMP's clear-editor binding.
+        "ctrl+shift+backspace" = "send_text all \\x1b[127;6u";
       };
       extraConfig = ''
         hide_window_decorations yes

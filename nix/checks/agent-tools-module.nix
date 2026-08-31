@@ -20,6 +20,7 @@ let
     };
   profile = (evaluate { enable = true; }).config;
   piOnly = (evaluate { pi.enable = true; }).config;
+  ompOnly = (evaluate { omp.enable = true; }).config;
   primeAgentOnly = (evaluate { primeAgent.enable = true; }).config;
   codexOnly = (evaluate { codexCli.enable = true; }).config;
   claudeOnly = (evaluate { claudeCodeCli.enable = true; }).config;
@@ -57,10 +58,22 @@ let
 in
 assert builtins.all (name: builtins.elem name (packageNames profile)) [
   "pi"
+  "omp"
   "prime-agent"
   "codex-cli-nix"
   "claude-code-nix"
 ];
+assert profile.home-manager.users.john.home.activation ? ompConfig;
+assert lib.hasInfix "runtime-config.yml"
+  profile.home-manager.users.john.home.activation.ompConfig.data;
+assert lib.hasInfix "keybindings.yml"
+  profile.home-manager.users.john.home.activation.ompConfig.data;
+assert
+  profile.home-manager.users.john.home.sessionVariables.PI_CONFIG_FILES
+  == "/home/john/.omp/agent/runtime-config.yml";
+assert
+  profile.home-manager.users.john.programs.kitty.keybindings."ctrl+shift+backspace"
+  == "send_text all \\x1b[127;6u";
 assert !(profile.users.users ? pi);
 assert !(builtins.hasAttr "prime-agent" profile.users.users);
 assert !(profile.users.users ? codex);
@@ -69,6 +82,11 @@ assert builtins.elem "pi" (packageNames piOnly);
 assert !(builtins.elem "prime-agent" (packageNames piOnly));
 assert !(builtins.elem "codex-cli-nix" (packageNames piOnly));
 assert !(builtins.elem "claude-code-nix" (packageNames piOnly));
+assert builtins.elem "omp" (packageNames ompOnly);
+assert !(builtins.elem "pi" (packageNames ompOnly));
+assert !(builtins.elem "prime-agent" (packageNames ompOnly));
+assert !(builtins.elem "codex-cli-nix" (packageNames ompOnly));
+assert !(builtins.elem "claude-code-nix" (packageNames ompOnly));
 assert builtins.elem "prime-agent" (packageNames primeAgentOnly);
 assert !(builtins.elem "pi" (packageNames primeAgentOnly));
 assert !(builtins.elem "codex-cli-nix" (packageNames primeAgentOnly));
