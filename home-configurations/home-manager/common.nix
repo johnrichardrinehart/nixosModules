@@ -171,6 +171,49 @@ in
         selection-match=bfdb9dff
         border=5e81acff
       '';
+      ".config/monstar/config".text = ''
+        font-family = Monstar Fira Mono Medium
+        font-size = 12
+        foreground = #CAD3F5
+        background = #000000
+        selection-foreground = #24273A
+        selection-background = #F4DBD6
+        cursor-color = #F4DBD6
+        cursor-text = #24273A
+        palette = 0=#494D64
+        palette = 1=#ED8796
+        palette = 2=#A6DA95
+        palette = 3=#EED49F
+        palette = 4=#8AADF4
+        palette = 5=#F5BDE6
+        palette = 6=#8BD5CA
+        palette = 7=#B8C0E0
+        palette = 8=#5B6078
+        palette = 9=#ED8796
+        palette = 10=#A6DA95
+        palette = 11=#EED49F
+        palette = 12=#8AADF4
+        palette = 13=#F5BDE6
+        palette = 14=#8BD5CA
+        palette = 15=#A5ADCB
+      '';
+      ".config/fontconfig/conf.d/50-monstar.conf".text = ''
+        <?xml version="1.0"?>
+        <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+        <fontconfig>
+          <match target="pattern">
+            <test name="family" compare="eq">
+              <string>Monstar Fira Mono Medium</string>
+            </test>
+            <edit name="family" mode="assign" binding="strong">
+              <string>Fira Mono for Powerline</string>
+            </edit>
+            <edit name="weight" mode="assign">
+              <const>medium</const>
+            </edit>
+          </match>
+        </fontconfig>
+      '';
       ".config/powerline/themes/gruvbox.theme".source = ./gruvbox.theme;
       ".config/hypr/hyprlock.conf".source = ./hyprlock.conf;
       ".codex/skills/usage-status".source = ./skills/usage-status;

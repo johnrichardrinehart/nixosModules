@@ -64,6 +64,10 @@ inputs: {
           terminalMultiplexer = "tmux";
           inherit (johnPkgs) tmux;
         };
+        monstar = {
+          inherit (inputs) monstar;
+          system = final.stdenv.hostPlatform.system;
+        };
         moonshine-models-onnx = {
           inherit (final) python3;
           modelDir = johnPkgs.moonshine-models-source;

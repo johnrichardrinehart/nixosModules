@@ -123,6 +123,26 @@
         "type": "github"
       }
     },
+    "monstar": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788330791,
+        "narHash": "sha256-WQDrfHnjBxktVPeH79LB6TdMcCVS+V50MmRo1QhDLx4=",
+        "owner": "rockorager",
+        "repo": "monstar",
+        "rev": "88dce5a0f14a4c954782ce2bd2580c96f05d56da",
+        "type": "github"
+      },
+      "original": {
+        "owner": "rockorager",
+        "repo": "monstar",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1788349181,
@@ -160,6 +180,7 @@
         "flake-parts": "flake-parts_2",
         "git-meld": "git-meld",
         "home-manager": "home-manager",
+        "monstar": "monstar",
         "nixpkgs": "nixpkgs",
         "sops-nix": "sops-nix"
       }
