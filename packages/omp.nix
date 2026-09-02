@@ -12,17 +12,23 @@ let
     inherit context-mode;
   };
   pluginPath = plugin: "${plugin}/lib/node_modules/${lib.getName plugin}";
+  pluginRuntimeInputs =
+    plugins: lib.unique (lib.concatMap (plugin: plugin.ompRuntimeInputs or [ ]) plugins);
   makeOmp =
     plugins:
-    (writeShellApplication {
-      name = "omp";
+    let
       runtimeInputs = [
         bash
         nix
         nodejs
         python3
       ]
+      ++ pluginRuntimeInputs plugins
       ++ plugins;
+    in
+    (writeShellApplication {
+      name = "omp";
+      inherit runtimeInputs;
       text = ''
         exec nix --tarball-ttl 3600 run github:numtide/llm-agents.nix#omp -- ${
           lib.escapeShellArgs (
@@ -44,7 +50,8 @@ let
     }).overrideAttrs
       (old: {
         passthru = (old.passthru or { }) // {
-          inherit plugins;
+          inherit plugins runtimeInputs;
+          pluginRuntimeInputs = pluginRuntimeInputs plugins;
           withPlugins = select: makeOmp (lib.unique (plugins ++ select pluginSet));
         };
       });

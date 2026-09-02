@@ -1,9 +1,12 @@
 {
   buildNpmPackage,
+  bun,
+  cargo,
   fetchurl,
   lib,
   pkg-config,
   python3,
+  rustc,
 }:
 buildNpmPackage rec {
   pname = "context-mode";
@@ -27,6 +30,12 @@ buildNpmPackage rec {
   '';
 
   dontNpmBuild = true;
+
+  passthru.ompRuntimeInputs = [
+    bun
+    cargo
+    rustc
+  ];
 
   meta = {
     description = "MCP plugin that reduces coding-agent context use";

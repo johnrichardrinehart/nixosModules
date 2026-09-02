@@ -88,7 +88,14 @@ assert !(builtins.elem "prime-agent" (packageNames piOnly));
 assert !(builtins.elem "codex-cli-nix" (packageNames piOnly));
 assert !(builtins.elem "claude-code-nix" (packageNames piOnly));
 assert builtins.elem "omp" (packageNames ompOnly);
+assert builtins.elem "python3" (map lib.getName (findOmpPackage ompOnly).runtimeInputs);
 assert builtins.elem "context-mode" (map lib.getName (findOmpPackage ompOnly).plugins);
+assert
+  map lib.getName (findOmpPackage ompOnly).pluginRuntimeInputs == [
+    "bun"
+    "cargo"
+    "rustc"
+  ];
 assert builtins.elem "context-mode" ompOnly.dev.johnrinehart.nix.allowedUnfreePackages;
 assert !(builtins.elem "pi" (packageNames ompOnly));
 assert !(builtins.elem "prime-agent" (packageNames ompOnly));
