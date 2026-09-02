@@ -89,6 +89,7 @@ inputs: {
           inherit (johnPkgs) codex-cli-nix;
           inherit (johnPkgs) oh-my-codex;
         };
+        omp.context-mode = johnPkgs.context-mode;
         on-idle.idleTimeoutSeconds = 5 * 60;
         repo-manager.system = final.stdenv.hostPlatform.system;
         repod.system = final.stdenv.hostPlatform.system;

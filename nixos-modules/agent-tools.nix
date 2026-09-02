@@ -6,7 +6,7 @@
 }:
 let
   cfg = config.dev.johnrinehart.agentTools;
-  ompPackage = pkgs.dev.johnrinehart.omp;
+  ompPackage = pkgs.dev.johnrinehart.omp.withPlugins (plugins: [ plugins.context-mode ]);
   mkMergedCodexConfig =
     {
       name,
@@ -155,6 +155,7 @@ in
       environment.systemPackages = [ pkgs.dev.johnrinehart.pi-nix ];
     })
     (lib.mkIf cfg.omp.enable {
+      dev.johnrinehart.nix.allowedUnfreePackages = lib.mkAfter [ "context-mode" ];
       environment.systemPackages = [ ompPackage ];
     })
     (lib.mkIf (cfg.pi.enable && cfg.pi.createWheelUser) {

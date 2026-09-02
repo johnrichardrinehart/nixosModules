@@ -36,7 +36,12 @@
   outputs =
     inputs@{ flake-parts, ... }:
     let
-      allowMoonshineModels = pkg: (inputs.nixpkgs.lib.getName pkg) == "moonshine-models-source";
+      allowUnfreePackages =
+        pkg:
+        builtins.elem (inputs.nixpkgs.lib.getName pkg) [
+          "context-mode"
+          "moonshine-models-source"
+        ];
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [ inputs.flake-parts.flakeModules.partitions ];
@@ -61,7 +66,7 @@
                 pkgs = import inputs.nixpkgs {
                   inherit system;
                   overlays = [ overlays.default ];
-                  config.allowUnfreePredicate = allowMoonshineModels;
+                  config.allowUnfreePredicate = allowUnfreePackages;
                 };
                 treefmtEval = inputs."treefmt-nix".lib.evalModule pkgs ./treefmt.nix;
                 preCommitCheck = inputs."git-hooks".lib.${system}.run {
@@ -126,7 +131,7 @@
           pkgs = import inputs.nixpkgs {
             inherit system;
             overlays = [ overlays.default ];
-            config.allowUnfreePredicate = allowMoonshineModels;
+            config.allowUnfreePredicate = allowUnfreePackages;
           };
         in
         {

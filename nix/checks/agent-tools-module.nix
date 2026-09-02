@@ -50,6 +50,9 @@ let
       };
     }).config;
   packageNames = config: map lib.getName config.environment.systemPackages;
+  findOmpPackage =
+    config:
+    lib.findFirst (package: lib.getName package == "omp") null config.environment.systemPackages;
   failedAssertions = config: builtins.filter (entry: !entry.assertion) config.assertions;
   hasWheelUser =
     name: config:
@@ -68,6 +71,8 @@ assert lib.hasInfix "runtime-config.yml"
   profile.home-manager.users.john.home.activation.ompConfig.data;
 assert lib.hasInfix "keybindings.yml"
   profile.home-manager.users.john.home.activation.ompConfig.data;
+assert lib.hasInfix "mcp.json" profile.home-manager.users.john.home.activation.ompConfig.data;
+assert lib.hasInfix "context-mode" profile.home-manager.users.john.home.activation.ompConfig.data;
 assert
   profile.home-manager.users.john.home.sessionVariables.PI_CONFIG_FILES
   == "/home/john/.omp/agent/runtime-config.yml";
@@ -83,6 +88,8 @@ assert !(builtins.elem "prime-agent" (packageNames piOnly));
 assert !(builtins.elem "codex-cli-nix" (packageNames piOnly));
 assert !(builtins.elem "claude-code-nix" (packageNames piOnly));
 assert builtins.elem "omp" (packageNames ompOnly);
+assert builtins.elem "context-mode" (map lib.getName (findOmpPackage ompOnly).plugins);
+assert builtins.elem "context-mode" ompOnly.dev.johnrinehart.nix.allowedUnfreePackages;
 assert !(builtins.elem "pi" (packageNames ompOnly));
 assert !(builtins.elem "prime-agent" (packageNames ompOnly));
 assert !(builtins.elem "codex-cli-nix" (packageNames ompOnly));

@@ -24,6 +24,15 @@ let
   emptyOmpRuntimeConfig = pkgs.writeText "omp-runtime-config.yml" ''
     {}
   '';
+  ompMcpConfigPath = "${config.home.homeDirectory}/.omp/agent/mcp.json";
+  defaultOmpMcpConfig = pkgs.writeText "omp-mcp.json" (
+    builtins.toJSON {
+      mcpServers.context-mode = {
+        type = "stdio";
+        command = "context-mode";
+      };
+    }
+  );
   agentDeckConfig = ''
     # Agent Deck Configuration
     # Managed by Home Manager
@@ -292,6 +301,16 @@ in
         run install -m 600 ${./omp-keybindings.yml} "$HOME/.omp/agent/keybindings.yml"
         if [[ ! -e "${ompRuntimeConfigPath}" ]]; then
           run install -m 600 ${emptyOmpRuntimeConfig} "${ompRuntimeConfigPath}"
+        fi
+        if [[ -e "${ompMcpConfigPath}" ]]; then
+          mcp_config_tmp="$(mktemp)"
+          ${lib.getExe pkgs.jq} \
+            '.mcpServers."context-mode" = {"type":"stdio","command":"context-mode"}' \
+            "${ompMcpConfigPath}" > "$mcp_config_tmp"
+          run install -m 600 "$mcp_config_tmp" "${ompMcpConfigPath}"
+          run rm "$mcp_config_tmp"
+        else
+          run install -m 600 ${defaultOmpMcpConfig} "${ompMcpConfigPath}"
         fi
       ''
     );
