@@ -1,6 +1,12 @@
-{ config, lib, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.dev.johnrinehart.xmonad;
+  terminalEmulator = config.dev.johnrinehart.users.terminalEmulator;
 in
 {
   options.dev.johnrinehart.xmonad = {
@@ -17,7 +23,10 @@ in
         hp.monad-logger
       ];
 
-      config = ./config.hs;
+      config = pkgs.replaceVars ./config.hs {
+        terminal_emulator = lib.getExe terminalEmulator.package;
+        terminal_emulator_class = terminalEmulator.package.windowClass or terminalEmulator.package.pname;
+      };
     };
   };
 }

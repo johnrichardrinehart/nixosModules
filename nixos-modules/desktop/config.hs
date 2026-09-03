@@ -175,7 +175,7 @@ myPolybarLogHook dbus = myLogHook <+> dynamicLogWithPP (polybarHook dbus)
 -- Key bindings. Add, modify or remove key bindings here.
 --
 
-myTerminal   = "kitty"
+myTerminal   = "@terminal_emulator@"
 appLauncher  = "rofi -modi drun,ssh,window -show drun -show-icons"
 windowChooser  = "rofi -modi drun,ssh,window,windowcd -show window -show-icons"
 screenLocker = "multilockscreen -l dim"
@@ -383,7 +383,7 @@ data App
   deriving Show
 
 audacious = ClassApp "Audacious"            "audacious"
-btm        = TitleApp "btm"                  "kitty"
+btm        = TitleApp "btm"                  "@terminal_emulator_class@"
 calendar  = ClassApp "Gnome-calendar"       "gnome-calendar"
 eog       = NameApp  "eog"                  "eog"
 evince    = ClassApp "Evince"               "evince"

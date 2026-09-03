@@ -11,11 +11,32 @@
         Primary login user for JohnOS system and Home Manager configuration.
       '';
     };
+
   };
 
   imports = [
     inputs.home-manager.nixosModules.default
     inputs.sops-nix.nixosModules.default
+    (
+      { config, lib, ... }:
+      {
+        options.dev.johnrinehart.users.terminalEmulator = {
+          package = lib.mkOption {
+            type = lib.types.package;
+            description = "Terminal emulator package for the primary user.";
+          };
+          integrations.kitty.enable = lib.mkEnableOption "KiTTY-specific terminal integration";
+        };
+
+        config.dev.johnrinehart.users.terminalEmulator.integrations.kitty.enable = lib.mkDefault (
+          (config.dev.johnrinehart.users.terminalEmulator.package.pname or "") == "kitty"
+        );
+        config.warnings = lib.optional (
+          config.dev.johnrinehart.users.terminalEmulator.integrations.kitty.enable
+          && (config.dev.johnrinehart.users.terminalEmulator.package.pname or "") != "kitty"
+        ) "KiTTY integration is enabled, but the primary terminal emulator package pname is not \"kitty\".";
+      }
+    )
 
     (
       { config, pkgs, ... }:
@@ -76,4 +97,5 @@
     ./bootloader
     ./kernel
   ];
+
 }

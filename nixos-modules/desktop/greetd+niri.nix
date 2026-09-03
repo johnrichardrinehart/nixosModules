@@ -7,6 +7,7 @@
 let
   cfg = config.dev.johnrinehart.desktop.greetd_niri;
   primaryUser = config.dev.johnrinehart.users.primary;
+  terminalEmulator = config.dev.johnrinehart.users.terminalEmulator.package;
 
   # Cursor theme settings (single source of truth)
   xcursorTheme = "Adwaita";
@@ -340,6 +341,8 @@ in
         niriBase = pkgs.replaceVarsWith {
           src = ./niri.kdl;
           replacements = {
+            terminal_emulator = lib.getExe terminalEmulator;
+            terminal_emulator_name = lib.getName terminalEmulator;
             fuzzel_dmenu = lib.getExe fuzzelDmenu;
             clipboard_watch = lib.getExe clipboard-watch;
             cliphist_picker = lib.getExe cliphist-picker;

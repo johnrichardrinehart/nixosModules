@@ -6,6 +6,9 @@
   ...
 }:
 let
+  terminalEmulator = osConfig.dev.johnrinehart.users.terminalEmulator.package;
+  kittyIntegrationEnabled =
+    osConfig.dev.johnrinehart.users.terminalEmulator.integrations.kitty.enable;
   stalonetrayrc = pkgs.writeText "stalonetrayrc" ''
     background "#3B4252"
     geometry "3x1+1150-0"
@@ -323,6 +326,7 @@ in
 
     home.sessionVariables = {
       EDITOR = "vim";
+      TERMINAL = lib.getExe terminalEmulator;
       TMUX_TMPDIR = lib.mkForce osConfig.dev.johnrinehart.tmux.socketDir;
     }
     // lib.optionalAttrs osConfig.dev.johnrinehart.agentTools.omp.enable {
@@ -389,7 +393,9 @@ in
 
     programs.gpg.enable = true;
 
-    programs.kitty = {
+    home.packages = [ pkgs.kitty ];
+
+    programs.kitty = lib.mkIf kittyIntegrationEnabled {
       enable = true;
       font.size = 12;
       font.name = "Fira Mono Medium for Powerline";
@@ -616,14 +622,15 @@ in
                   exec ${lib.getExe pkgs.dev.johnrinehart.tmux} -S "$tmux_socket" new-session -s "$tmux_session"
                 fi
               '';
+          kittySshIntegration = lib.optionalString kittyIntegrationEnabled ''
+            # Keep zsh SSH completion while using KiTTY's remote-shell integration.
+            ssh() { kitty +kitten ssh "$@" }
+          '';
         in
         ''
           ${multiplexerAutoAttach}
 
-          # Use a function instead of an alias so zsh uses _ssh completion
-          # rather than expanding to "kitty +kitten ssh" and hitting kitty's
-          # broken anchor-based matcher handling.
-          ssh() { kitty +kitten ssh "$@" }
+          ${kittySshIntegration}
 
               export BGIMG="${bgimg}"
               if [ ! -f $BGIMG ]; then

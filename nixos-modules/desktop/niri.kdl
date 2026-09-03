@@ -336,8 +336,8 @@ binds {
         show-hotkey-overlay
     }
     // Suggested binds for running programs: terminal, app launcher, screen locker.
-    Mod+T hotkey-overlay-title="Open a Terminal: kitty" {
-        spawn "kitty"
+    Mod+T hotkey-overlay-title="Open a Terminal: @terminal_emulator_name@" {
+        spawn "@terminal_emulator@"
     }
     Mod+P hotkey-overlay-title="Run an Application: fuzzel" {
         spawn "fuzzel"

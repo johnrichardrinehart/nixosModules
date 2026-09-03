@@ -34,6 +34,7 @@ in
     dev.johnrinehart.home-manager.packages.shell.enable = lib.mkDefault true;
     dev.johnrinehart.home-manager.packages.games.enable = lib.mkDefault true;
     dev.johnrinehart.home-manager.packages.messaging.enable = lib.mkDefault true;
+    environment.systemPackages = [ config.dev.johnrinehart.users.terminalEmulator.package ];
 
     home-manager.users.${primaryUser}.idle = {
       short_timeout_duration = 60 * 5;
