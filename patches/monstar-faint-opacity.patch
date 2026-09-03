@@ -1,0 +1,482 @@
+From c4d9c7791181b586bd27e1bcb57a28ae5c6be095 Mon Sep 17 00:00:00 2001
+From: John Rinehart <johnrichardrinehart@gmail.com>
+Date: Wed, 2 Sep 2026 18:45:59 -0400
+Subject: [PATCH] renderer: configure faint text opacity
+
+Faint text always uses a fixed 50 percent foreground blend. KiTTY uses 40 percent, so the rendered result differs.
+
+Add a faint-opacity setting and pass it to each renderer. Keep 0.5 as the default so the patch has no effect unless configured.
+---
+ dist/monstar.5       |  5 +++++
+ src/App.zig          |  4 ++++
+ src/AsyncRaster.zig  | 13 ++++++++++++-
+ src/Config.zig       |  7 +++++++
+ src/Renderer.zig     | 35 +++++++++++++++++++++++++++++++----
+ src/bench.zig        |  2 +-
+ src/pixel_raster.zig | 27 +++++++++++++++++++--------
+ 7 files changed, 79 insertions(+), 14 deletions(-)
+
+diff --git a/dist/monstar.5 b/dist/monstar.5
+index a28c166..932c63a 100644
+--- a/dist/monstar.5
++++ b/dist/monstar.5
+@@ -164,6 +164,11 @@ decodes sRGB colors, blends them in linear RGB with the original glyph
+ coverage, and encodes the result as sRGB.
+ The default is
+ .BR default .
++.TP
++.BI faint-opacity " = opacity"
++Set the foreground opacity for faint text.
++The value is between 0 and 1 inclusive.
++The default is 0.5.
+ .SH WINDOW SETTINGS
+ .TP
+ .BI background-opacity " = opacity"
+diff --git a/src/App.zig b/src/App.zig
+index 63d5f66..5d93416 100644
+--- a/src/App.zig
++++ b/src/App.zig
+@@ -5045,6 +5045,7 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
+         self.config.background_opacity,
+         self.config.background_opacity_cells,
+         self.config.text_composition_strategy,
++        self.config.faint_opacity,
+     )) {
+         async_raster.reconfigure(
+             self.font.discovery(),
+@@ -5055,6 +5056,7 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
+             self.config.background_opacity,
+             self.config.background_opacity_cells,
+             self.config.text_composition_strategy,
++            self.config.faint_opacity,
+         ) catch |err| {
+             self.rasterFatal(err);
+             return .deferred;
+@@ -5334,6 +5336,7 @@ fn startAsyncRasterLoad(self: *App) void {
+         self.config.background_opacity,
+         self.config.background_opacity_cells,
+         self.config.text_composition_strategy,
++        self.config.faint_opacity,
+         &self.render_state,
+     ) catch |err| {
+         self.rasterFatal(err);
+@@ -5367,6 +5370,7 @@ fn finishAsyncRasterLoad(self: *App) void {
+                 self.config.background_opacity,
+                 self.config.background_opacity_cells,
+                 self.config.text_composition_strategy,
++                self.config.faint_opacity,
+             )) {
+                 // Config changed while loading; rebuild with the new one.
+                 raster.deinit();
+diff --git a/src/AsyncRaster.zig b/src/AsyncRaster.zig
+index cc6f59c..e6f9ab3 100644
+--- a/src/AsyncRaster.zig
++++ b/src/AsyncRaster.zig
+@@ -118,6 +118,7 @@ pub const Loader = struct {
+     background_alpha: u8,
+     background_alpha_cells: bool,
+     text_composition_strategy: Config.TextCompositionStrategy,
++    faint_alpha: u8,
+     state: *vt.RenderState,
+     thread: ?std.Thread = null,
+     mutex: std.atomic.Mutex = .unlocked,
+@@ -136,6 +137,7 @@ pub const Loader = struct {
+         background_alpha: u8,
+         background_alpha_cells: bool,
+         text_composition_strategy: Config.TextCompositionStrategy,
++        faint_alpha: u8,
+         state: *vt.RenderState,
+     ) !Loader {
+         const rc = linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);
+@@ -150,6 +152,7 @@ pub const Loader = struct {
+             .background_alpha = background_alpha,
+             .background_alpha_cells = background_alpha_cells,
+             .text_composition_strategy = text_composition_strategy,
++            .faint_alpha = faint_alpha,
+             .state = state,
+             .complete_fd = @intCast(rc),
+         };
+@@ -203,6 +206,7 @@ pub const Loader = struct {
+             self.background_alpha,
+             self.background_alpha_cells,
+             self.text_composition_strategy,
++            self.faint_alpha,
+             self.state,
+         )) |raster|
+             .{ .ready = raster }
+@@ -248,6 +252,7 @@ pub fn init(
+     background_alpha: u8,
+     background_alpha_cells: bool,
+     text_composition_strategy: Config.TextCompositionStrategy,
++    faint_alpha: u8,
+     state: *vt.RenderState,
+ ) !AsyncRaster {
+     const alloc = std.heap.smp_allocator;
+@@ -263,6 +268,7 @@ pub fn init(
+         .background_alpha = background_alpha,
+         .background_alpha_cells = background_alpha_cells,
+         .text_composition_strategy = text_composition_strategy,
++        .faint_alpha = faint_alpha,
+     });
+     errdefer renderer.deinit();
+     const rc = linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);
+@@ -322,6 +328,7 @@ pub fn reconfigure(
+     background_alpha: u8,
+     background_alpha_cells: bool,
+     text_composition_strategy: Config.TextCompositionStrategy,
++    faint_alpha: u8,
+ ) !void {
+     self.lock();
+     defer self.mutex.unlock();
+@@ -338,6 +345,7 @@ pub fn reconfigure(
+         .background_alpha = background_alpha,
+         .background_alpha_cells = background_alpha_cells,
+         .text_composition_strategy = text_composition_strategy,
++        .faint_alpha = faint_alpha,
+     });
+     errdefer renderer.deinit();
+     self.renderer.deinit();
+@@ -366,6 +374,7 @@ pub fn configuredFor(
+     background_alpha: u8,
+     background_alpha_cells: bool,
+     text_composition_strategy: Config.TextCompositionStrategy,
++    faint_alpha: u8,
+ ) bool {
+     self.lock();
+     defer self.mutex.unlock();
+@@ -376,7 +385,8 @@ pub fn configuredFor(
+         optionalTerminalColorEql(self.renderer.cursor_text, cursor_text) and
+         self.renderer.background_alpha == background_alpha and
+         self.renderer.background_alpha_cells == background_alpha_cells and
+-        self.renderer.text_composition_strategy == text_composition_strategy;
++        self.renderer.text_composition_strategy == text_composition_strategy and
++        self.renderer.faint_alpha == faint_alpha;
+ }
+ 
+ /// Queues one job and wakes the worker. Returns `error.Busy` unless the raster
+@@ -701,6 +711,7 @@ test "unchanged dirty rows report no damage" {
+         255,
+         false,
+         .default,
++        128,
+         &state,
+     );
+     defer raster.deinit();
+diff --git a/src/Config.zig b/src/Config.zig
+index 3c1dac6..134b57b 100644
+--- a/src/Config.zig
++++ b/src/Config.zig
+@@ -145,6 +145,8 @@ background_opacity: u8 = 255,
+ background_blur: bool = true,
+ /// Whether background opacity also applies to explicit cell backgrounds.
+ background_opacity_cells: bool = false,
++/// Foreground opacity for faint (SGR 2) text.
++faint_opacity: u8 = 128,
+ 
+ theme: ?Theme = null,
+ light_theme_overrides: ?ThemeOverrides = null,
+@@ -293,6 +295,8 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
+             return error.InvalidValue;
+     } else if (std.mem.eql(u8, key, "copy-highlight-duration")) {
+         self.copy_highlight_duration = std.fmt.parseInt(u32, value, 10) catch return error.InvalidValue;
++    } else if (std.mem.eql(u8, key, "faint-opacity")) {
++        self.faint_opacity = try parseOpacity(value);
+     } else if (std.mem.eql(u8, key, "background-opacity")) {
+         self.background_opacity = try parseOpacity(value);
+     } else if (std.mem.eql(u8, key, "background-blur")) {
+@@ -563,6 +567,7 @@ test "defaults" {
+     try std.testing.expectEqual(SyntheticItalicWeight.regular, config.synthetic_italic_weight);
+     try std.testing.expectEqual(FontSize{ .points = 12 }, config.font_size);
+     try std.testing.expectEqual(TextCompositionStrategy.default, config.text_composition_strategy);
++    try std.testing.expectEqual(@as(u8, 128), config.faint_opacity);
+     try std.testing.expectEqual(WindowPadding{}, config.window_padding_x);
+     try std.testing.expectEqual(WindowPadding{}, config.window_padding_y);
+     try std.testing.expectEqual(@as(?Command, null), config.command);
+@@ -620,6 +625,7 @@ test "parse config" {
+         \\inertial-scrolling = false
+         \\copy-highlight-duration = 250
+         \\background-opacity = 0.8
++        \\faint-opacity = 0.4
+         \\background-blur = false
+         \\background-opacity-cells = true
+         \\background = #1a1b26
+@@ -657,6 +663,7 @@ test "parse config" {
+     try std.testing.expect(!config.inertial_scrolling);
+     try std.testing.expectEqual(@as(u32, 250), config.copy_highlight_duration);
+     try std.testing.expectEqual(@as(u8, 204), config.background_opacity);
++    try std.testing.expectEqual(@as(u8, 102), config.faint_opacity);
+     try std.testing.expect(!config.background_blur);
+     try std.testing.expect(config.background_opacity_cells);
+     try std.testing.expectEqual(vt.color.RGB{ .r = 0x1a, .g = 0x1b, .b = 0x26 }, config.background.?);
+diff --git a/src/Renderer.zig b/src/Renderer.zig
+index 22af3b9..1ed730d 100644
+--- a/src/Renderer.zig
++++ b/src/Renderer.zig
+@@ -27,8 +27,6 @@ const kittyDestRect = kitty_graphics.kittyDestRect;
+ const kittyItemOpaque = kitty_graphics.kittyItemOpaque;
+ const kitty_placeholder = vt.kitty.graphics.unicode.placeholder;
+ const search_match_alpha = 128;
+-/// Foreground weight for faint (SGR 2) text; the rest blends to background.
+-const faint_alpha = 128;
+ 
+ pub const ScrollbarThumb = pixel_raster.ScrollbarThumb;
+ pub const KittyRenderItem = kitty_graphics.KittyRenderItem;
+@@ -65,6 +63,7 @@ background_alpha: u8,
+ /// backgrounds. Selections, cursors, and renderer overlays stay opaque.
+ background_alpha_cells: bool,
+ text_composition_strategy: Config.TextCompositionStrategy,
++faint_alpha: u8,
+ /// Keyboard focus: unfocused windows draw the cursor as a hollow
+ /// rectangle regardless of the requested style. Set by the caller.
+ focused: bool = true,
+@@ -79,6 +78,8 @@ search_range: ?LinkRange = null,
+ search_matches: []const bool = &.{},
+ /// Per-cell resolved foreground colors for the row being rendered.
+ fg_scratch: std.ArrayList(vt.color.RGB),
++/// Per-cell alpha for text coverage.
++fg_alpha_scratch: std.ArrayList(u8),
+ /// Per-cell font face indices for the row being rendered.
+ face_scratch: std.ArrayList(u16),
+ /// Per-cell reverse-video state for color glyphs, including block cursor.
+@@ -141,6 +142,7 @@ pub const InitOptions = struct {
+     background_alpha: u8 = 255,
+     background_alpha_cells: bool = false,
+     text_composition_strategy: Config.TextCompositionStrategy = .default,
++    faint_alpha: u8 = 128,
+     /// Benchmark escape hatch for comparing the superseded row path.
+     track_cell_damage: bool = true,
+     partial_cell_raster: bool = true,
+@@ -189,7 +191,9 @@ pub fn init(alloc: std.mem.Allocator, font: *Font, opts: InitOptions) !Renderer
+         .background_alpha = opts.background_alpha,
+         .background_alpha_cells = opts.background_alpha_cells,
+         .text_composition_strategy = opts.text_composition_strategy,
++        .faint_alpha = opts.faint_alpha,
+         .fg_scratch = .empty,
++        .fg_alpha_scratch = .empty,
+         .face_scratch = .empty,
+         .reverse_scratch = .empty,
+         .italic_mask_scratch = .empty,
+@@ -208,6 +212,7 @@ pub fn init(alloc: std.mem.Allocator, font: *Font, opts: InitOptions) !Renderer
+ pub fn deinit(self: *Renderer) void {
+     self.text_shaper.deinit();
+     self.fg_scratch.deinit(self.alloc);
++    self.fg_alpha_scratch.deinit(self.alloc);
+     self.face_scratch.deinit(self.alloc);
+     self.reverse_scratch.deinit(self.alloc);
+     self.italic_mask_scratch.deinit(self.alloc);
+@@ -676,6 +681,7 @@ pub fn renderPreedit(
+                 false,
+                 self.glyph_clip_x,
+                 self.text_composition_strategy,
++                255,
+             );
+         }
+         try self.blitDecoration(.underline, x, y, argb(state.colors.foreground), pixels, width, height);
+@@ -844,6 +850,7 @@ fn renderTextOverlay(
+                 false,
+                 self.glyph_clip_x,
+                 self.text_composition_strategy,
++                255,
+             );
+         }
+         x += span;
+@@ -1312,6 +1319,7 @@ fn prepareRowCells(
+     // Background + foreground-color + face-resolution pass. Adjacent
+     // cells sharing a background color coalesce into one fill.
+     try self.fg_scratch.resize(self.alloc, cols);
++    try self.fg_alpha_scratch.resize(self.alloc, cols);
+     try self.face_scratch.resize(self.alloc, cols);
+     try self.reverse_scratch.resize(self.alloc, cols);
+     const y_px: u31 = y * font.cell_height;
+@@ -1346,8 +1354,13 @@ fn prepareRowCells(
+             fg = bg orelse colors.background;
+             bg = old_fg;
+         }
+-        // Faint (SGR 2) dims the glyph halfway toward its background.
+-        if (style.flags.faint) fg = blendRgb(fg, bg orelse colors.background, faint_alpha);
++        var fg_alpha: u8 = 255;
++        if (style.flags.faint) {
++            if (self.text_composition_strategy == .kitty)
++                fg_alpha = self.faint_alpha
++            else
++                fg = blendRgb(fg, bg orelse colors.background, self.faint_alpha);
++        }
+         var background_uses_alpha = self.background_alpha_cells and bg != null;
+         // Selection overrides cell colors: fixed background, default
+         // foreground, so selected text reads uniformly.
+@@ -1360,12 +1373,14 @@ fn prepareRowCells(
+             bg = self.selection_bg;
+             fg = self.selection_fg orelse colors.foreground;
+             reverse_color_glyph = false;
++            fg_alpha = 255;
+             background_uses_alpha = false;
+         } else if (search_selected) {
+             bg = self.search_bg;
+             fg = self.search_fg;
+             reverse_color_glyph = false;
+             background_uses_alpha = false;
++            fg_alpha = 255;
+         } else if (search_match) {
+             dim_search_bg = true;
+         }
+@@ -1380,8 +1395,10 @@ fn prepareRowCells(
+             fg = self.cursorGlyph(colors, cell.fg, cell.bg);
+             reverse_color_glyph = false;
+             dim_search_bg = false;
++            fg_alpha = 255;
+         }
+         self.fg_scratch.items[x] = fg;
++        self.fg_alpha_scratch.items[x] = fg_alpha;
+         self.reverse_scratch.items[x] = reverse_color_glyph;
+         if (backgrounds != .none and x >= cell_range.start and x < cell_range.end) {
+             const color: ?u32 = if (dim_search_bg) color: {
+@@ -1649,6 +1666,7 @@ fn blitDecoration(
+         false,
+         self.glyph_clip_x,
+         self.text_composition_strategy,
++        255,
+     );
+ }
+ 
+@@ -1763,6 +1781,7 @@ fn blitItalicMask(
+                 coverage,
+                 argb(self.fg_scratch.items[cell]),
+                 self.text_composition_strategy,
++                self.fg_alpha_scratch.items[cell],
+             );
+         }
+     }
+@@ -1810,6 +1829,7 @@ fn drawRun(
+                 false,
+                 self.glyph_clip_x,
+                 self.text_composition_strategy,
++                self.fg_alpha_scratch.items[x],
+             );
+         }
+         return;
+@@ -1917,6 +1937,7 @@ fn drawRun(
+                 self.reverse_scratch.items[cluster],
+                 self.glyph_clip_x,
+                 self.text_composition_strategy,
++                self.fg_alpha_scratch.items[cluster],
+             );
+         }
+         pen_x += sg.x_advance;
+@@ -1955,6 +1976,12 @@ pub fn backgroundPixel(self: *const Renderer, rgb: vt.color.RGB) u32 {
+     return pixel_raster.premultipliedArgb(rgb, self.background_alpha);
+ }
+ 
++test "KiTTY faint opacity keeps forty percent foreground" {
++    const white: vt.color.RGB = .{ .r = 255, .g = 255, .b = 255 };
++    const black: vt.color.RGB = .{ .r = 0, .g = 0, .b = 0 };
++    try std.testing.expectEqual(vt.color.RGB{ .r = 102, .g = 102, .b = 102 }, blendRgb(white, black, 102));
++}
++
+ test "kitty unscaled blit converts rgb and clips" {
+     const untouched: u32 = 0xff111111;
+     var pixels = [_]u32{untouched} ** 9; // 3x3 framebuffer
+diff --git a/src/bench.zig b/src/bench.zig
+index fdb1962..d3e9d0e 100644
+--- a/src/bench.zig
++++ b/src/bench.zig
+@@ -35,7 +35,7 @@ pub fn run(init: std.process.Init) !void {
+         },
+     );
+     defer font.deinit(alloc);
+-    var renderer: Renderer = try .init(alloc, &font, .{});
++    var renderer: Renderer = try .init(alloc, &font, .{ .faint_alpha = config.faint_opacity });
+     defer renderer.deinit();
+ 
+     const width: u31 = font.cell_width * cols;
+diff --git a/src/pixel_raster.zig b/src/pixel_raster.zig
+index 3424d5b..882effd 100644
+--- a/src/pixel_raster.zig
++++ b/src/pixel_raster.zig
+@@ -125,12 +125,13 @@ pub fn blitGlyph(
+     reverse_color_glyph: bool,
+     clip_x: ?PixelRange,
+     text_composition_strategy: Config.TextCompositionStrategy,
++    coverage_alpha: u8,
+ ) void {
+     switch (g.format) {
+-        .alpha => if (g.fully_opaque)
++        .alpha => if (g.fully_opaque and coverage_alpha == 255)
+             blitOpaqueGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x)
+         else
+-            blitAlphaGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x, text_composition_strategy),
++            blitAlphaGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x, text_composition_strategy, coverage_alpha),
+         .bgra => if (reverse_color_glyph)
+             blitBgraGlyphAsAlpha(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x)
+         else
+@@ -201,6 +202,7 @@ fn blitAlphaGlyph(
+     color: u32,
+     clip_x: ?PixelRange,
+     text_composition_strategy: Config.TextCompositionStrategy,
++    coverage_alpha: u8,
+ ) void {
+     const clip = clipGlyph(g, x0, y0, buf_width, buf_height, clip_x) orelse return;
+     const px_start: usize = @intCast(x0 + @as(i32, @intCast(clip.gx_start)));
+@@ -208,7 +210,7 @@ fn blitAlphaGlyph(
+         const py: usize = @intCast(y0 + @as(i32, @intCast(gy)));
+         const src = g.bitmap[gy * g.width + clip.gx_start .. gy * g.width + clip.gx_end];
+         const dst = pixels[py * stride + px_start ..][0..src.len];
+-        blendAlphaSpan(dst, src, color, text_composition_strategy);
++        blendAlphaSpan(dst, src, color, text_composition_strategy, coverage_alpha);
+     }
+ }
+ 
+@@ -221,6 +223,7 @@ pub fn blendAlphaSpan(
+     noalias coverage: []const u8,
+     color: u32,
+     text_composition_strategy: Config.TextCompositionStrategy,
++    coverage_alpha: u8,
+ ) void {
+     std.debug.assert(dst.len == coverage.len);
+     // Foregrounds are opaque. Coverage becomes source alpha and is
+@@ -228,8 +231,9 @@ pub fn blendAlphaSpan(
+     std.debug.assert(color >> 24 == 0xff);
+     if (text_composition_strategy == .kitty) {
+         for (dst, coverage) |*pixel, cov| {
+-            if (cov == 0) continue;
+-            pixel.* = blendKitty(color, pixel.*, cov);
++            const effective: u8 = @intCast((@as(u16, cov) * coverage_alpha + 127) / 255);
++            if (effective == 0) continue;
++            pixel.* = blendKitty(color, pixel.*, effective);
+         }
+         return;
+     }
+@@ -562,12 +566,19 @@ test "blendAlphaSpan matches scalar blend" {
+                 g.* = bg;
+                 w.* = if (cov.* == 0) bg else blend(color, bg, cov.*);
+             }
+-            blendAlphaSpan(got[0..len], coverage[0..len], color, .default);
++            blendAlphaSpan(got[0..len], coverage[0..len], color, .default, 255);
+             try std.testing.expectEqualSlices(u32, want[0..len], got[0..len]);
+         }
+     }
+ }
+ 
++test "KiTTY faint opacity scales glyph coverage" {
++    var pixel = [_]u32{0xff000000};
++    const coverage = [_]u8{255};
++    blendAlphaSpan(&pixel, &coverage, 0xffcad3f5, .kitty, 102);
++    try std.testing.expectEqual(@as(u32, 0xff858ca3), pixel[0]);
++}
++
+ test "opaque glyph fast path matches alpha blending with clipping" {
+     const bitmap: [12]u8 = @splat(0xff);
+     const alpha_glyph: Font.Glyph = .{
+@@ -582,8 +593,8 @@ test "opaque glyph fast path matches alpha blending with clipping" {
+ 
+     var alpha_pixels: [5 * 4]u32 = @splat(0xff123456);
+     var opaque_pixels = alpha_pixels;
+-    blitGlyph(&alpha_pixels, 5, 5, 4, &alpha_glyph, -1, 2, 0xffabcdef, false, null, .default);
+-    blitGlyph(&opaque_pixels, 5, 5, 4, &opaque_glyph, -1, 2, 0xffabcdef, false, null, .default);
++    blitGlyph(&alpha_pixels, 5, 5, 4, &alpha_glyph, -1, 2, 0xffabcdef, false, null, .default, 255);
++    blitGlyph(&opaque_pixels, 5, 5, 4, &opaque_glyph, -1, 2, 0xffabcdef, false, null, .default, 255);
+     try std.testing.expectEqualSlices(u32, &alpha_pixels, &opaque_pixels);
+ }
+ 
+-- 
+2.54.0
+

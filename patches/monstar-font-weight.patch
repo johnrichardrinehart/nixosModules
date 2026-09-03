@@ -1,0 +1,129 @@
+diff --git a/dist/monstar.5 b/dist/monstar.5
+index bef1b44..bbff5ed 100644
+--- a/dist/monstar.5
++++ b/dist/monstar.5
+@@ -108,0 +109,10 @@ with this setting.
++.BI font-weight " = weight"
++Set the requested weight for regular and italic faces.
++.B default
++lets Fontconfig select the weight.
++.B medium
++requests the Fontconfig medium weight.
++Bold faces continue to request the bold weight.
++The default is
++.BR default .
++.TP
+diff --git a/src/App.zig b/src/App.zig
+index b059f9d..da9f728 100644
+--- a/src/App.zig
++++ b/src/App.zig
+@@ -437,0 +438,4 @@ fn tmpDirPath(environ: std.process.Environ) []const u8 {
++fn fontOptions(config: Config) Font.Options {
++    return .{ .weight = config.font_weight };
++}
++
+@@ -449 +453 @@ pub fn init(
+-    var font: Font = try .init(
++    var font: Font = try .initOptions(
+@@ -453,0 +458 @@ pub fn init(
++        fontOptions(config),
+@@ -808 +813 @@ fn scaleChanged(ctx: *anyopaque, scale120: u32) anyerror!void {
+-    const new_font: Font = try .init(
++    const new_font: Font = try .initOptions(
+@@ -812,0 +818 @@ fn scaleChanged(ctx: *anyopaque, scale120: u32) anyerror!void {
++        fontOptions(self.config),
+@@ -2049 +2055 @@ fn applyConfig(self: *App, new_config: Config) !void {
+-    const new_font: Font = try .init(
++    const new_font: Font = try .initOptions(
+@@ -2053,0 +2060 @@ fn applyConfig(self: *App, new_config: Config) !void {
++        fontOptions(new_config),
+@@ -2140 +2147 @@ fn setRuntimeFontSize(self: *App, configured_size: ?Config.FontSize) void {
+-    const new_font: Font = Font.init(
++    const new_font: Font = Font.initOptions(
+@@ -2144,0 +2152 @@ fn setRuntimeFontSize(self: *App, configured_size: ?Config.FontSize) void {
++        fontOptions(self.config),
+diff --git a/src/Config.zig b/src/Config.zig
+index 374e111..7e5b16d 100644
+--- a/src/Config.zig
++++ b/src/Config.zig
+@@ -89,0 +90,4 @@ pub const MetricModifier = union(enum) {
++pub const FontWeight = enum {
++    default,
++    medium,
++};
+@@ -92,0 +97 @@ font_family: [:0]const u8 = "monospace",
++font_weight: FontWeight = .default,
+@@ -232,0 +238,2 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
++    } else if (std.mem.eql(u8, key, "font-weight")) {
++        self.font_weight = std.meta.stringToEnum(FontWeight, value) orelse return error.InvalidValue;
+@@ -529,0 +537 @@ test "defaults" {
++    try std.testing.expectEqual(FontWeight.default, config.font_weight);
+@@ -571,0 +580 @@ test "parse config" {
++        \\font-weight = medium
+@@ -602,0 +612 @@ test "parse config" {
++    try std.testing.expectEqual(FontWeight.medium, config.font_weight);
+diff --git a/src/Font.zig b/src/Font.zig
+index fe83f24..dd9f5e6 100644
+--- a/src/Font.zig
++++ b/src/Font.zig
+@@ -88 +88 @@ pub const FaceStyle = enum(u2) {
+-    fn weight(self: FaceStyle) ?c_int {
++    fn weight(self: FaceStyle, configured: Config.FontWeight) ?c_int {
+@@ -90 +90,4 @@ pub const FaceStyle = enum(u2) {
+-            .regular, .italic => null,
++            .regular, .italic => switch (configured) {
++                .default => null,
++                .medium => c.FC_WEIGHT_MEDIUM,
++            },
+@@ -102,0 +106,8 @@ pub const FaceStyle = enum(u2) {
++test "select configured regular and bold emphasized weights" {
++    try std.testing.expectEqual(null, FaceStyle.regular.weight(.default));
++    try std.testing.expectEqual(c.FC_WEIGHT_MEDIUM, FaceStyle.regular.weight(.medium).?);
++    try std.testing.expectEqual(c.FC_WEIGHT_MEDIUM, FaceStyle.italic.weight(.medium).?);
++    try std.testing.expectEqual(c.FC_WEIGHT_BOLD, FaceStyle.bold.weight(.default).?);
++    try std.testing.expectEqual(c.FC_WEIGHT_BOLD, FaceStyle.bold_italic.weight(.default).?);
++}
++
+@@ -104,0 +116,4 @@ const style_count = std.meta.fields(FaceStyle).len;
++pub const Options = struct {
++    weight: Config.FontWeight = .default,
++};
++
+@@ -112,0 +128 @@ pub const Discovery = struct {
++    options: Options,
+@@ -118,0 +135 @@ pub const Discovery = struct {
++        options: Options,
+@@ -130 +147 @@ pub const Discovery = struct {
+-            sort_sets_opt[field.value] = try fontSort(family, size_px, style);
++            sort_sets_opt[field.value] = try fontSort(family, size_px, style, options);
+@@ -143,0 +161 @@ pub const Discovery = struct {
++            .options = options,
+@@ -691 +709 @@ fn bitmapRow(bitmap: c.FT_Bitmap, height: u31, y: usize) usize {
+-fn fontSort(family: [:0]const u8, size_px: u31, style: FaceStyle) Error!*c.FcFontSet {
++fn fontSort(family: [:0]const u8, size_px: u31, style: FaceStyle, options: Options) Error!*c.FcFontSet {
+@@ -697 +715 @@ fn fontSort(family: [:0]const u8, size_px: u31, style: FaceStyle) Error!*c.FcFon
+-    if (style.weight()) |weight| _ = c.FcPatternAddInteger(pattern, c.FC_WEIGHT, weight);
++    if (style.weight(options.weight)) |weight| _ = c.FcPatternAddInteger(pattern, c.FC_WEIGHT, weight);
+@@ -752,0 +771,10 @@ pub fn init(
++) Error!Font {
++    return initOptions(alloc, family, size_px, adjust_cell_height, .{});
++}
++
++pub fn initOptions(
++    alloc: std.mem.Allocator,
++    family: [:0]const u8,
++    size_px: u31,
++    adjust_cell_height: ?Config.MetricModifier,
++    options: Options,
+@@ -756 +784 @@ pub fn init(
+-    const discovery_data = try Discovery.init(family, size_px, adjust_cell_height);
++    const discovery_data = try Discovery.init(family, size_px, adjust_cell_height, options);
+diff --git a/src/bench.zig b/src/bench.zig
+index 23623b5..360f390 100644
+--- a/src/bench.zig
++++ b/src/bench.zig
+@@ -26 +26 @@ pub fn run(init: std.process.Init) !void {
+-    var font: Font = try .init(
++    var font: Font = try .initOptions(
+@@ -30,0 +31 @@ pub fn run(init: std.process.Init) !void {
++        .{ .weight = config.font_weight },

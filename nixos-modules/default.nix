@@ -50,6 +50,7 @@
     ./laptop.nix
     ./locale.nix
     ./network.nix
+    ./monstar.nix
     ./nix.nix
     ./obsidian.nix
     ./packages.nix

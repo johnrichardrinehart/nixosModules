@@ -1,0 +1,211 @@
+diff --git a/dist/monstar.5 b/dist/monstar.5
+index bbff5ed..f47f45c 100644
+--- a/dist/monstar.5
++++ b/dist/monstar.5
+@@ -145,0 +146,10 @@ By default no adjustment is applied.
++.TP
++.BI text-composition-strategy " = strategy"
++Set the color composition method for grayscale glyphs.
++.B default
++blends encoded RGB values.
++.B kitty
++decodes sRGB colors, blends them in linear RGB with the original glyph
++coverage, and encodes the result as sRGB.
++The default is
++.BR default .
+diff --git a/src/App.zig b/src/App.zig
+index da9f728..0d0e9b8 100644
+--- a/src/App.zig
++++ b/src/App.zig
+@@ -5042,0 +5043 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
++        self.config.text_composition_strategy,
+@@ -5051,0 +5053 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
++            self.config.text_composition_strategy,
+@@ -5329,0 +5332 @@ fn startAsyncRasterLoad(self: *App) void {
++        self.config.text_composition_strategy,
+@@ -5361,0 +5365 @@ fn finishAsyncRasterLoad(self: *App) void {
++                self.config.text_composition_strategy,
+diff --git a/src/AsyncRaster.zig b/src/AsyncRaster.zig
+index 34af51c..cc6f59c 100644
+--- a/src/AsyncRaster.zig
++++ b/src/AsyncRaster.zig
+@@ -119,0 +120 @@ pub const Loader = struct {
++    text_composition_strategy: Config.TextCompositionStrategy,
+@@ -136,0 +138 @@ pub const Loader = struct {
++        text_composition_strategy: Config.TextCompositionStrategy,
+@@ -149,0 +152 @@ pub const Loader = struct {
++            .text_composition_strategy = text_composition_strategy,
+@@ -201,0 +205 @@ pub const Loader = struct {
++            self.text_composition_strategy,
+@@ -245,0 +250 @@ pub fn init(
++    text_composition_strategy: Config.TextCompositionStrategy,
+@@ -259,0 +265 @@ pub fn init(
++        .text_composition_strategy = text_composition_strategy,
+@@ -317,0 +324 @@ pub fn reconfigure(
++    text_composition_strategy: Config.TextCompositionStrategy,
+@@ -332,0 +340 @@ pub fn reconfigure(
++        .text_composition_strategy = text_composition_strategy,
+@@ -359,0 +368 @@ pub fn configuredFor(
++    text_composition_strategy: Config.TextCompositionStrategy,
+@@ -369 +378,2 @@ pub fn configuredFor(
+-        self.renderer.background_alpha_cells == background_alpha_cells;
++        self.renderer.background_alpha_cells == background_alpha_cells and
++        self.renderer.text_composition_strategy == text_composition_strategy;
+@@ -692,0 +703 @@ test "unchanged dirty rows report no damage" {
++        .default,
+diff --git a/src/Config.zig b/src/Config.zig
+index 7e5b16d..72e5c58 100644
+--- a/src/Config.zig
++++ b/src/Config.zig
+@@ -89,0 +90,5 @@ pub const MetricModifier = union(enum) {
++pub const TextCompositionStrategy = enum {
++    default,
++    kitty,
++};
++
+@@ -93,0 +99 @@ pub const FontWeight = enum {
++
+@@ -103,0 +110 @@ adjust_cell_height: ?MetricModifier = null,
++text_composition_strategy: TextCompositionStrategy = .default,
+@@ -243,0 +251,2 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
++    } else if (std.mem.eql(u8, key, "text-composition-strategy")) {
++        self.text_composition_strategy = std.meta.stringToEnum(TextCompositionStrategy, value) orelse return error.InvalidValue;
+@@ -538,0 +548 @@ test "defaults" {
++    try std.testing.expectEqual(TextCompositionStrategy.default, config.text_composition_strategy);
+@@ -581,0 +592 @@ test "parse config" {
++        \\text-composition-strategy = kitty
+@@ -614,0 +626 @@ test "parse config" {
++    try std.testing.expectEqual(TextCompositionStrategy.kitty, config.text_composition_strategy);
+diff --git a/src/Renderer.zig b/src/Renderer.zig
+index 83e539c..d704a3b 100644
+--- a/src/Renderer.zig
++++ b/src/Renderer.zig
+@@ -65,0 +66 @@ background_alpha_cells: bool,
++text_composition_strategy: Config.TextCompositionStrategy,
+@@ -138,0 +140 @@ pub const InitOptions = struct {
++    text_composition_strategy: Config.TextCompositionStrategy = .default,
+@@ -185,0 +188 @@ pub fn init(alloc: std.mem.Allocator, font: *Font, opts: InitOptions) !Renderer
++        .text_composition_strategy = opts.text_composition_strategy,
+@@ -669,0 +673 @@ pub fn renderPreedit(
++                self.text_composition_strategy,
+@@ -836,0 +841 @@ fn renderTextOverlay(
++                self.text_composition_strategy,
+@@ -1640,0 +1646 @@ fn blitDecoration(
++        self.text_composition_strategy,
+@@ -1684,0 +1691 @@ fn drawRun(
++                self.text_composition_strategy,
+@@ -1754,0 +1762 @@ fn drawRun(
++            self.text_composition_strategy,
+diff --git a/src/pixel_raster.zig b/src/pixel_raster.zig
+index 9bcd3d4..9fbf24f 100644
+--- a/src/pixel_raster.zig
++++ b/src/pixel_raster.zig
+@@ -6,0 +7 @@ const Font = @import("Font.zig");
++const Config = @import("Config.zig");
+@@ -125,0 +127 @@ pub fn blitGlyph(
++    text_composition_strategy: Config.TextCompositionStrategy,
+@@ -131 +133 @@ pub fn blitGlyph(
+-            blitAlphaGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x),
++            blitAlphaGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x, text_composition_strategy),
+@@ -200,0 +203 @@ fn blitAlphaGlyph(
++    text_composition_strategy: Config.TextCompositionStrategy,
+@@ -208 +211 @@ fn blitAlphaGlyph(
+-        blendAlphaSpan(dst, src, color);
++        blendAlphaSpan(dst, src, color, text_composition_strategy);
+@@ -216 +219,6 @@ fn blitAlphaGlyph(
+-fn blendAlphaSpan(noalias dst: []u32, noalias coverage: []const u8, color: u32) void {
++fn blendAlphaSpan(
++    noalias dst: []u32,
++    noalias coverage: []const u8,
++    color: u32,
++    text_composition_strategy: Config.TextCompositionStrategy,
++) void {
+@@ -220,0 +229,7 @@ fn blendAlphaSpan(noalias dst: []u32, noalias coverage: []const u8, color: u32)
++    if (text_composition_strategy == .kitty) {
++        for (dst, coverage) |*pixel, cov| {
++            if (cov == 0) continue;
++            pixel.* = blendKitty(color, pixel.*, cov);
++        }
++        return;
++    }
+@@ -357,0 +373,63 @@ fn blend(fg: u32, bg: u32, alpha: u8) u32 {
++fn decodeSrgb(encoded: f32) f32 {
++    return if (encoded <= 0.04045)
++        encoded / 12.92
++    else
++        std.math.pow(f32, (encoded + 0.055) / 1.055, 2.4);
++}
++
++const srgb_decode_lut: [256]f32 = decode: {
++    @setEvalBranchQuota(1_000_000);
++    var lut: [256]f32 = undefined;
++    for (&lut, 0..) |*value, channel| {
++        value.* = decodeSrgb(@as(f32, @floatFromInt(channel)) / 255);
++    }
++    break :decode lut;
++};
++
++const srgb_encode_lut: [65536]u8 = encode: {
++    @setEvalBranchQuota(1_000_000);
++    var lut: [65536]u8 = undefined;
++    var encoded: u8 = 0;
++    var boundary = decodeSrgb(@as(f32, 0.5) / 255);
++    for (&lut, 0..) |*value, channel| {
++        const linear: f32 = @as(f32, @floatFromInt(channel)) / 65535;
++        while (encoded < 255 and linear >= boundary) {
++            encoded += 1;
++            boundary = decodeSrgb((@as(f32, @floatFromInt(encoded)) + 0.5) / 255);
++        }
++        value.* = encoded;
++    }
++    break :encode lut;
++};
++
++fn encodeLinear(linear: f32) u8 {
++    const index: u16 = @intFromFloat(@round(std.math.clamp(linear, 0, 1) * 65535));
++    return srgb_encode_lut[index];
++}
++
++fn blendKitty(fg: u32, bg: u32, coverage: u8) u32 {
++    if (coverage == 0xff) return fg;
++    const alpha: f32 = @as(f32, @floatFromInt(coverage)) / 255;
++    const inverse_alpha = 1 - alpha;
++    const bg_alpha_u8: u8 = @truncate(bg >> 24);
++    const bg_alpha: f32 = @as(f32, @floatFromInt(bg_alpha_u8)) / 255;
++    const out_alpha = alpha + bg_alpha * inverse_alpha;
++    const out_alpha_u8: u8 = @intFromFloat(@round(out_alpha * 255));
++
++    var result = @as(u32, out_alpha_u8) << 24;
++    inline for (.{ 16, 8, 0 }) |shift| {
++        const fg_channel: u8 = @truncate(fg >> shift);
++        const bg_premultiplied: u8 = @truncate(bg >> shift);
++        const bg_channel: u8 = if (bg_alpha_u8 == 0)
++            0
++        else
++            @intFromFloat(@round(@min(255, @as(f32, @floatFromInt(bg_premultiplied)) / bg_alpha)));
++        const premultiplied_linear =
++            srgb_decode_lut[fg_channel] * alpha +
++            srgb_decode_lut[bg_channel] * bg_alpha * inverse_alpha;
++        const encoded = if (out_alpha == 0) 0 else encodeLinear(premultiplied_linear / out_alpha);
++        const premultiplied_encoded: u8 = @intFromFloat(@round(@as(f32, @floatFromInt(encoded)) * out_alpha));
++        result |= @as(u32, premultiplied_encoded) << shift;
++    }
++    return result;
++}
+@@ -417,0 +496,8 @@ test "blend endpoints" {
++test "kitty text composition blends in linear sRGB" {
++    try std.testing.expectEqual(@as(u32, 0xffbcbcbc), blendKitty(0xffffffff, 0xff000000, 128));
++    try std.testing.expectEqual(@as(u32, 0xff000000), blendKitty(0xffffffff, 0xff000000, 0));
++    try std.testing.expectEqual(@as(u32, 0xffffffff), blendKitty(0xffffffff, 0xff000000, 255));
++    try std.testing.expectEqual(@as(u32, 0x80808080), blendKitty(0xffffffff, 0x00000000, 128));
++    try std.testing.expectEqual(@as(u32, 0xff959cb6), blendKitty(0xffcad3f5, 0xff1a1b26, 128));
++}
++
+@@ -479 +565 @@ test "blendAlphaSpan matches scalar blend" {
+-            blendAlphaSpan(got[0..len], coverage[0..len], color);
++            blendAlphaSpan(got[0..len], coverage[0..len], color, .default);
+@@ -499,2 +585,2 @@ test "opaque glyph fast path matches alpha blending with clipping" {
+-    blitGlyph(&alpha_pixels, 5, 5, 4, &alpha_glyph, -1, 2, 0xffabcdef, false, null);
+-    blitGlyph(&opaque_pixels, 5, 5, 4, &opaque_glyph, -1, 2, 0xffabcdef, false, null);
++    blitGlyph(&alpha_pixels, 5, 5, 4, &alpha_glyph, -1, 2, 0xffabcdef, false, null, .default);
++    blitGlyph(&opaque_pixels, 5, 5, 4, &opaque_glyph, -1, 2, 0xffabcdef, false, null, .default);

@@ -181,8 +181,14 @@ in
         border=5e81acff
       '';
       ".config/monstar/config".text = ''
-        font-family = Monstar Fira Mono Medium
+        font-family = Fira Mono for Powerline
+        font-weight = medium
+        synthetic-italic = true
+        synthetic-italic-weight = bold
         font-size = 12
+        text-composition-strategy = kitty
+        faint-opacity = 0.4
+        block-shade-style = kitty
         foreground = #CAD3F5
         background = #000000
         selection-foreground = #24273A
@@ -205,23 +211,6 @@ in
         palette = 13=#F5BDE6
         palette = 14=#8BD5CA
         palette = 15=#A5ADCB
-      '';
-      ".config/fontconfig/conf.d/50-monstar.conf".text = ''
-        <?xml version="1.0"?>
-        <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
-        <fontconfig>
-          <match target="pattern">
-            <test name="family" compare="eq">
-              <string>Monstar Fira Mono Medium</string>
-            </test>
-            <edit name="family" mode="assign" binding="strong">
-              <string>Fira Mono for Powerline</string>
-            </edit>
-            <edit name="weight" mode="assign">
-              <const>medium</const>
-            </edit>
-          </match>
-        </fontconfig>
       '';
       ".config/powerline/themes/gruvbox.theme".source = ./gruvbox.theme;
       ".config/hypr/hyprlock.conf".source = ./hyprlock.conf;
