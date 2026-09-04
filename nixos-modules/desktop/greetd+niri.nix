@@ -188,15 +188,19 @@ in
         };
         extraKeybindings = lib.mkOption {
           type = lib.types.lines;
-          default = "";
+          default = ''
+            Mod+O repeat=false {
+                toggle-overview
+            }
+          '';
           example = ''
             Mod+Shift+Return {
                 spawn "alacritty"
             }
           '';
           description = ''
-            Extra raw KDL keybindings appended inside the generated niri
-            binds block.
+            Raw KDL keybindings inserted inside the generated niri binds
+            block. A downstream definition replaces the default bindings.
           '';
         };
       };

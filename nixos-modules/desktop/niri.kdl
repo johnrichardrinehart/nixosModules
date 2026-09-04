@@ -395,9 +395,7 @@ binds {
     // Open/close the Overview: a zoomed-out view of workspaces and windows.
     // You can also move the mouse into the top-left hot corner,
     // or do a four-finger swipe up on a touchpad.
-    Mod+O repeat=false {
-        toggle-overview
-    }
+    @extra_niri_keybindings@
     Mod+Backspace repeat=false {
         close-window
     }
@@ -817,7 +815,6 @@ binds {
     Mod+Alt+C {
         spawn-sh "@wl-kbptr@"
     }
-    @extra_niri_keybindings@
 }
 recent-windows {
     // off
