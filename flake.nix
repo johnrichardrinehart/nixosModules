@@ -16,6 +16,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    kitkat-rs = {
+      url = "github:johnrichardrinehart/kitkat-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     monstar = {
       url = "github:rockorager/monstar";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -101,6 +106,10 @@
                     inherit (inputs.nixpkgs) lib;
                   };
                   git-meld-module = import ./nix/checks/git-meld-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
+                  kitkat-rs-module = import ./nix/checks/kitkat-rs-module.nix {
                     inherit inputs pkgs;
                     inherit (inputs.nixpkgs) lib;
                   };

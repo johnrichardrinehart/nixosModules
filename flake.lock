@@ -123,6 +123,26 @@
         "type": "github"
       }
     },
+    "kitkat-rs": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788490283,
+        "narHash": "sha256-lzoI5ghMitdBkdjHN54PsNQd2UY0nxyNDTn/bc5nn8U=",
+        "owner": "johnrichardrinehart",
+        "repo": "kitkat-rs",
+        "rev": "b6a0e61cecfd32cc3cd104ce89b824155ab3d385",
+        "type": "github"
+      },
+      "original": {
+        "owner": "johnrichardrinehart",
+        "repo": "kitkat-rs",
+        "type": "github"
+      }
+    },
     "monstar": {
       "inputs": {
         "nixpkgs": [
@@ -180,6 +200,7 @@
         "flake-parts": "flake-parts_2",
         "git-meld": "git-meld",
         "home-manager": "home-manager",
+        "kitkat-rs": "kitkat-rs",
         "monstar": "monstar",
         "nixpkgs": "nixpkgs",
         "sops-nix": "sops-nix"

@@ -66,6 +66,7 @@
     ./firmware/framework-ec.nix
     ./fonts.nix
     ./git-meld.nix
+    ./kitkat-rs.nix
     ./gocryptfs.nix
     ./ide.nix
     ./laptop.nix
