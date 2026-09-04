@@ -16,9 +16,19 @@ in
 {
   options.dev.johnrinehart.system = {
     enable = lib.mkEnableOption "John's system";
+    ls.timeStyle = lib.mkOption {
+      type = lib.types.str;
+      default = "+%b %e %H:%M:%S";
+      example = "full-iso";
+      description = ''
+        GNU ls timestamp format exported through TIME_STYLE. Downstream
+        configurations may use a named style or a custom date format.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    environment.sessionVariables.TIME_STYLE = cfg.ls.timeStyle;
     # The global useDHCP flag is deprecated, therefore explicitly set to false here.
     # Per-interface useDHCP will be mandatory in the future, so this generated config
     # replicates the default behaviour.
