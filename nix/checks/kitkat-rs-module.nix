@@ -44,7 +44,7 @@ assert builtins.elem fastestPackage fastest.config.environment.systemPackages;
 assert shellTools.config.dev.johnrinehart.kitkat-rs.enable;
 assert builtins.elem shellTools.config.dev.johnrinehart.kitkat-rs.package
   shellTools.config.environment.systemPackages;
-assert lib.getExe lowRssPackage == "${lowRssPackage}/bin/kitkat-rs";
+assert lib.getExe lowRssPackage == "${lowRssPackage}/bin/kitkat";
 pkgs.runCommand "kitkat-rs-module-evaluation" { } ''
   touch $out
 ''

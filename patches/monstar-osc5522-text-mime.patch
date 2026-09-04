@@ -1,0 +1,64 @@
+From 52185eec01387d33102a07d394c8d76686001b9c Mon Sep 17 00:00:00 2001
+From: John Rinehart <johnrichardrinehart@gmail.com>
+Date: Thu, 3 Sep 2026 21:46:56 -0400
+Subject: [PATCH] clipboard: advertise canonical plain text MIME
+
+---
+ src/KittyClipboard.zig | 31 +++++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/src/KittyClipboard.zig b/src/KittyClipboard.zig
+index 16cef72..1c3d2e4 100644
+--- a/src/KittyClipboard.zig
++++ b/src/KittyClipboard.zig
+@@ -238,11 +238,17 @@ pub fn paste(
+         removed.deinit();
+     }
+ 
+-    const available = [_][]const u8{mime};
++    var available_buf: [2][]const u8 = undefined;
++    available_buf[0] = mime;
++    var available_len: usize = 1;
++    if (vt.clipboard.isTextMime(mime) and !std.mem.eql(u8, mime, "text/plain")) {
++        available_buf[available_len] = "text/plain";
++        available_len += 1;
++    }
+     try (clipboard.PasteEvent{
+         .primary = target == .primary,
+         .pw = &pw,
+-        .available = &available,
++        .available = available_buf[0..available_len],
+     }).encode(writer);
+ }
+ 
+@@ -488,6 +494,27 @@ test "targets listing does not consume a paste grant" {
+     try std.testing.expectEqualStrings("snapshot", state.front().?.read.paste.?.data);
+ }
+ 
++test "paste event advertises canonical plain text alias" {
++    var state: KittyClipboard = .init(std.testing.allocator);
++    defer state.deinit();
++
++    var output: [1024]u8 = undefined;
++    var writer: std.Io.Writer = .fixed(&output);
++    try state.paste(
++        std.testing.io,
++        .clipboard,
++        "text/plain;charset=utf-8",
++        "hello",
++        &writer,
++    );
++
++    try std.testing.expect(std.mem.indexOf(
++        u8,
++        writer.buffered(),
++        "dGV4dC9wbGFpbjtjaGFyc2V0PXV0Zi04IHRleHQvcGxhaW4K",
++    ) != null);
++}
++
+ test "paste event write failure discards its grant" {
+     var state: KittyClipboard = .init(std.testing.allocator);
+     defer state.deinit();
+-- 
+2.54.0
+
