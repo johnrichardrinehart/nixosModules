@@ -44,6 +44,10 @@ inputs: {
           inherit (inputs) git-meld;
           system = final.stdenv.hostPlatform.system;
         };
+        kitkat-rs-faster = {
+          inherit (inputs) kitkat-rs;
+          system = final.stdenv.hostPlatform.system;
+        };
         kitkat-rs-fastest = {
           inherit (inputs) kitkat-rs;
           system = final.stdenv.hostPlatform.system;

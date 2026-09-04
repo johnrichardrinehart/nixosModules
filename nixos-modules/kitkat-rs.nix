@@ -7,6 +7,7 @@
 let
   cfg = config.dev.johnrinehart.kitkat-rs;
   variants = {
+    faster = pkgs.dev.johnrinehart.kitkat-rs-faster;
     fastest = pkgs.dev.johnrinehart.kitkat-rs-fastest;
     low-rss = pkgs.dev.johnrinehart.kitkat-rs-low-rss;
   };
@@ -25,12 +26,13 @@ in
     variant = lib.mkOption {
       type = lib.types.enum [
         "low-rss"
+        "faster"
         "fastest"
       ];
       default = "low-rss";
       description = ''
-        Implementation to install. low-rss streams non-interlaced PNG rows and
-        minimizes memory use; fastest uses a full-frame, parallel resize path.
+        Implementation to install. low-rss streams non-interlaced PNG rows;
+        faster uses parallel Lanczos3; fastest uses parallel nearest-neighbor.
       '';
     };
 
