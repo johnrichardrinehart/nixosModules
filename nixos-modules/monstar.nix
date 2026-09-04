@@ -18,6 +18,7 @@ in
     ../patches/monstar-synthetic-italic.patch
     ../patches/monstar-faint-opacity.patch
     ../patches/monstar-kitty-block-shades.patch
+    ../patches/monstar-ssh.patch
   ];
 
   config.nixpkgs.overlays = lib.mkAfter [
