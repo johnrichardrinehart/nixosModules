@@ -19,7 +19,6 @@ in
     ../patches/monstar-faint-opacity.patch
     ../patches/monstar-kitty-block-shades.patch
     ../patches/monstar-ssh.patch
-    ../patches/monstar-osc5522-text-mime.patch
   ];
 
   config.nixpkgs.overlays = lib.mkAfter [

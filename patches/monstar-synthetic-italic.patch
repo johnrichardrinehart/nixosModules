@@ -1,4 +1,4 @@
-From 80c723101ee1bdc4069ea47dfb768683f94149de Mon Sep 17 00:00:00 2001
+From 5e80dec530640008708b50e8f1027195561fd0db Mon Sep 17 00:00:00 2001
 From: John Rinehart <johnrichardrinehart@gmail.com>
 Date: Wed, 2 Sep 2026 15:25:47 -0400
 Subject: [PATCH] font: apply synthetic italic transforms
@@ -36,10 +36,10 @@ index f47f45c..a28c166 100644
  Set the font size.
  Bare values and
 diff --git a/src/App.zig b/src/App.zig
-index 0d0e9b8..63d5f66 100644
+index 0e82da4..8eea273 100644
 --- a/src/App.zig
 +++ b/src/App.zig
-@@ -436,7 +436,11 @@ fn tmpDirPath(environ: std.process.Environ) []const u8 {
+@@ -464,7 +464,11 @@ fn tmpDirPath(environ: std.process.Environ) []const u8 {
  /// copies them via execve). `config` strings must remain valid until the
  /// first successful reload or App teardown.
  fn fontOptions(config: Config) Font.Options {
@@ -424,7 +424,7 @@ index dd9f5e6..207995f 100644
  
  test "load monospace font and rasterize a glyph" {
 diff --git a/src/Renderer.zig b/src/Renderer.zig
-index d704a3b..22af3b9 100644
+index 50aaf69..feb9aa4 100644
 --- a/src/Renderer.zig
 +++ b/src/Renderer.zig
 @@ -41,6 +41,7 @@ const blendCapsule = pixel_raster.blendCapsule;
@@ -444,7 +444,7 @@ index d704a3b..22af3b9 100644
  /// Per-row flag: the row's last render blitted ink above its own
  /// pixel strip (accented capitals exceed the font ascender in many
  /// fonts). renderDirty repaints a dirty row's neighbors only when
-@@ -189,6 +192,7 @@ pub fn init(alloc: std.mem.Allocator, font: *Font, opts: InitOptions) !Renderer
+@@ -195,6 +198,7 @@ pub fn init(alloc: std.mem.Allocator, font: *Font, opts: InitOptions) !Renderer
          .fg_scratch = .empty,
          .face_scratch = .empty,
          .reverse_scratch = .empty,
@@ -452,7 +452,7 @@ index d704a3b..22af3b9 100644
          .row_overhang = .{},
          .rendered_rects = .empty,
          .cell_damage_tracker = .init(alloc),
-@@ -206,6 +210,7 @@ pub fn deinit(self: *Renderer) void {
+@@ -212,6 +216,7 @@ pub fn deinit(self: *Renderer) void {
      self.fg_scratch.deinit(self.alloc);
      self.face_scratch.deinit(self.alloc);
      self.reverse_scratch.deinit(self.alloc);
@@ -460,7 +460,7 @@ index d704a3b..22af3b9 100644
      self.row_overhang.deinit(self.alloc);
      self.rendered_rects.deinit(self.alloc);
      self.cell_damage_tracker.deinit();
-@@ -1647,6 +1652,122 @@ fn blitDecoration(
+@@ -1681,6 +1686,122 @@ fn blitDecoration(
      );
  }
  
@@ -583,7 +583,7 @@ index d704a3b..22af3b9 100644
  /// Shape cells [start, end) as one HarfBuzz run and blit the glyphs.
  /// The run's face is the one resolved for its first cell.
  fn drawRun(
-@@ -1715,15 +1836,23 @@ fn drawRun(
+@@ -1749,15 +1870,23 @@ fn drawRun(
      if (!non_space) return;
  
      const shaped = try self.text_shaper.shape(face_index, face_style, end - start);
@@ -608,7 +608,7 @@ index d704a3b..22af3b9 100644
              pen_x = @as(i32, @intCast(cluster)) * font.cell_width;
          }
          const cluster_x: usize = @intCast(cluster);
-@@ -1747,22 +1876,62 @@ fn drawRun(
+@@ -1781,22 +1910,62 @@ fn drawRun(
              },
              else => |e| return e,
          };

@@ -1,8 +1,26 @@
+From 74c642daedb19f1ad2fd1d67176c2a21fb354fba Mon Sep 17 00:00:00 2001
+From: John Rinehart <johnrichardrinehart@gmail.com>
+Date: Wed, 2 Sep 2026 11:05:42 -0400
+Subject: [PATCH] renderer: add kitty text composition
+
+Add an opt-in text composition strategy that preserves grayscale glyph coverage and blends foreground and background colors in linear sRGB. Keep the existing encoded-RGB path as the default.
+---
+ dist/monstar.5       | 10 +++++
+ src/App.zig          |  4 ++
+ src/AsyncRaster.zig  | 13 +++++-
+ src/Config.zig       | 12 ++++++
+ src/Renderer.zig     |  8 ++++
+ src/pixel_raster.zig | 98 +++++++++++++++++++++++++++++++++++++++++---
+ 6 files changed, 138 insertions(+), 7 deletions(-)
+
 diff --git a/dist/monstar.5 b/dist/monstar.5
 index bbff5ed..f47f45c 100644
 --- a/dist/monstar.5
 +++ b/dist/monstar.5
-@@ -145,0 +146,10 @@ By default no adjustment is applied.
+@@ -143,6 +143,16 @@ The result is at least one pixel, and glyphs remain vertically centered.
+ Pixel adjustments stay fixed while zooming or changing output scale;
+ percentage adjustments follow the font metrics.
+ By default no adjustment is applied.
 +.TP
 +.BI text-composition-strategy " = strategy"
 +Set the color composition method for grayscale glyphs.
@@ -13,106 +31,317 @@ index bbff5ed..f47f45c 100644
 +coverage, and encodes the result as sRGB.
 +The default is
 +.BR default .
+ .SH WINDOW SETTINGS
+ .TP
+ .BI background-opacity " = opacity"
 diff --git a/src/App.zig b/src/App.zig
-index da9f728..0d0e9b8 100644
+index 0d451a9..0e82da4 100644
 --- a/src/App.zig
 +++ b/src/App.zig
-@@ -5042,0 +5043 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
+@@ -5430,6 +5430,7 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
+         self.cursor_text,
+         self.config.background_opacity,
+         self.config.background_opacity_cells,
 +        self.config.text_composition_strategy,
-@@ -5051,0 +5053 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
+     )) {
+         async_raster.reconfigure(
+             self.font.discovery(),
+@@ -5439,6 +5440,7 @@ fn startAsyncRender(self: *App) !AsyncRenderStart {
+             self.cursor_text,
+             self.config.background_opacity,
+             self.config.background_opacity_cells,
 +            self.config.text_composition_strategy,
-@@ -5329,0 +5332 @@ fn startAsyncRasterLoad(self: *App) void {
+         ) catch |err| {
+             self.rasterFatal(err);
+             return .deferred;
+@@ -5717,6 +5719,7 @@ fn startAsyncRasterLoad(self: *App) void {
+         self.cursor_text,
+         self.config.background_opacity,
+         self.config.background_opacity_cells,
 +        self.config.text_composition_strategy,
-@@ -5361,0 +5365 @@ fn finishAsyncRasterLoad(self: *App) void {
+         &self.render_state,
+     ) catch |err| {
+         self.rasterFatal(err);
+@@ -5749,6 +5752,7 @@ fn finishAsyncRasterLoad(self: *App) void {
+                 self.cursor_text,
+                 self.config.background_opacity,
+                 self.config.background_opacity_cells,
 +                self.config.text_composition_strategy,
+             )) {
+                 // Config changed while loading; rebuild with the new one.
+                 raster.deinit();
 diff --git a/src/AsyncRaster.zig b/src/AsyncRaster.zig
 index 34af51c..cc6f59c 100644
 --- a/src/AsyncRaster.zig
 +++ b/src/AsyncRaster.zig
-@@ -119,0 +120 @@ pub const Loader = struct {
+@@ -117,6 +117,7 @@ pub const Loader = struct {
+     cursor_text: ?Config.TerminalColor,
+     background_alpha: u8,
+     background_alpha_cells: bool,
 +    text_composition_strategy: Config.TextCompositionStrategy,
-@@ -136,0 +138 @@ pub const Loader = struct {
+     state: *vt.RenderState,
+     thread: ?std.Thread = null,
+     mutex: std.atomic.Mutex = .unlocked,
+@@ -134,6 +135,7 @@ pub const Loader = struct {
+         cursor_text: ?Config.TerminalColor,
+         background_alpha: u8,
+         background_alpha_cells: bool,
 +        text_composition_strategy: Config.TextCompositionStrategy,
-@@ -149,0 +152 @@ pub const Loader = struct {
+         state: *vt.RenderState,
+     ) !Loader {
+         const rc = linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);
+@@ -147,6 +149,7 @@ pub const Loader = struct {
+             .cursor_text = cursor_text,
+             .background_alpha = background_alpha,
+             .background_alpha_cells = background_alpha_cells,
 +            .text_composition_strategy = text_composition_strategy,
-@@ -201,0 +205 @@ pub const Loader = struct {
+             .state = state,
+             .complete_fd = @intCast(rc),
+         };
+@@ -199,6 +202,7 @@ pub const Loader = struct {
+             self.cursor_text,
+             self.background_alpha,
+             self.background_alpha_cells,
 +            self.text_composition_strategy,
-@@ -245,0 +250 @@ pub fn init(
+             self.state,
+         )) |raster|
+             .{ .ready = raster }
+@@ -243,6 +247,7 @@ pub fn init(
+     cursor_text: ?Config.TerminalColor,
+     background_alpha: u8,
+     background_alpha_cells: bool,
 +    text_composition_strategy: Config.TextCompositionStrategy,
-@@ -259,0 +265 @@ pub fn init(
+     state: *vt.RenderState,
+ ) !AsyncRaster {
+     const alloc = std.heap.smp_allocator;
+@@ -257,6 +262,7 @@ pub fn init(
+         .cursor_text = cursor_text,
+         .background_alpha = background_alpha,
+         .background_alpha_cells = background_alpha_cells,
 +        .text_composition_strategy = text_composition_strategy,
-@@ -317,0 +324 @@ pub fn reconfigure(
+     });
+     errdefer renderer.deinit();
+     const rc = linux.eventfd(0, linux.EFD.CLOEXEC | linux.EFD.NONBLOCK);
+@@ -315,6 +321,7 @@ pub fn reconfigure(
+     cursor_text: ?Config.TerminalColor,
+     background_alpha: u8,
+     background_alpha_cells: bool,
 +    text_composition_strategy: Config.TextCompositionStrategy,
-@@ -332,0 +340 @@ pub fn reconfigure(
+ ) !void {
+     self.lock();
+     defer self.mutex.unlock();
+@@ -330,6 +337,7 @@ pub fn reconfigure(
+         .cursor_text = cursor_text,
+         .background_alpha = background_alpha,
+         .background_alpha_cells = background_alpha_cells,
 +        .text_composition_strategy = text_composition_strategy,
-@@ -359,0 +368 @@ pub fn configuredFor(
+     });
+     errdefer renderer.deinit();
+     self.renderer.deinit();
+@@ -357,6 +365,7 @@ pub fn configuredFor(
+     cursor_text: ?Config.TerminalColor,
+     background_alpha: u8,
+     background_alpha_cells: bool,
 +    text_composition_strategy: Config.TextCompositionStrategy,
-@@ -369 +378,2 @@ pub fn configuredFor(
+ ) bool {
+     self.lock();
+     defer self.mutex.unlock();
+@@ -366,7 +375,8 @@ pub fn configuredFor(
+         optionalTerminalColorEql(self.renderer.cursor_color, cursor_color) and
+         optionalTerminalColorEql(self.renderer.cursor_text, cursor_text) and
+         self.renderer.background_alpha == background_alpha and
 -        self.renderer.background_alpha_cells == background_alpha_cells;
 +        self.renderer.background_alpha_cells == background_alpha_cells and
 +        self.renderer.text_composition_strategy == text_composition_strategy;
-@@ -692,0 +703 @@ test "unchanged dirty rows report no damage" {
+ }
+ 
+ /// Queues one job and wakes the worker. Returns `error.Busy` unless the raster
+@@ -690,6 +700,7 @@ test "unchanged dirty rows report no damage" {
+         null,
+         255,
+         false,
 +        .default,
+         &state,
+     );
+     defer raster.deinit();
 diff --git a/src/Config.zig b/src/Config.zig
 index 7e5b16d..72e5c58 100644
 --- a/src/Config.zig
 +++ b/src/Config.zig
-@@ -89,0 +90,5 @@ pub const MetricModifier = union(enum) {
+@@ -87,10 +87,16 @@ pub const MetricModifier = union(enum) {
+     }
+ };
+ 
 +pub const TextCompositionStrategy = enum {
 +    default,
 +    kitty,
 +};
 +
-@@ -93,0 +99 @@ pub const FontWeight = enum {
+ pub const FontWeight = enum {
+     default,
+     medium,
+ };
 +
-@@ -103,0 +110 @@ adjust_cell_height: ?MetricModifier = null,
+ /// Wayland app-id and desktop-entry hint for desktop integration.
+ app_id: [:0]const u8 = default_app_id,
+ font_family: [:0]const u8 = "monospace",
+@@ -101,6 +107,7 @@ font_size: FontSize = .{ .points = 12 },
+ /// Signed physical-pixel or percentage adjustment to the font's natural cell
+ /// height. Unset preserves the natural metrics.
+ adjust_cell_height: ?MetricModifier = null,
 +text_composition_strategy: TextCompositionStrategy = .default,
-@@ -243,0 +251,2 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
+ /// Minimum window padding in logical pixels. One configured value applies to
+ /// both sides; two values are left/right for X and top/bottom for Y.
+ window_padding_x: WindowPadding = .{},
+@@ -241,6 +248,8 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
+         self.font_size = try parseFontSize(value);
+     } else if (std.mem.eql(u8, key, "adjust-cell-height")) {
+         self.adjust_cell_height = try parseMetricModifier(value);
 +    } else if (std.mem.eql(u8, key, "text-composition-strategy")) {
 +        self.text_composition_strategy = std.meta.stringToEnum(TextCompositionStrategy, value) orelse return error.InvalidValue;
-@@ -538,0 +548 @@ test "defaults" {
+     } else if (std.mem.eql(u8, key, "window-padding-x")) {
+         self.window_padding_x = try parseWindowPadding(value);
+     } else if (std.mem.eql(u8, key, "window-padding-y")) {
+@@ -536,6 +545,7 @@ test "defaults" {
+     try std.testing.expectEqualStrings("monospace", config.font_family);
+     try std.testing.expectEqual(FontWeight.default, config.font_weight);
+     try std.testing.expectEqual(FontSize{ .points = 12 }, config.font_size);
 +    try std.testing.expectEqual(TextCompositionStrategy.default, config.text_composition_strategy);
-@@ -581,0 +592 @@ test "parse config" {
+     try std.testing.expectEqual(WindowPadding{}, config.window_padding_x);
+     try std.testing.expectEqual(WindowPadding{}, config.window_padding_y);
+     try std.testing.expectEqual(@as(?Command, null), config.command);
+@@ -579,6 +589,7 @@ test "parse config" {
+         \\font-family = Fira Code
+         \\font-weight = medium
+         \\font-size = 14.5
 +        \\text-composition-strategy = kitty
-@@ -614,0 +626 @@ test "parse config" {
+         \\window-padding-x = 4
+         \\window-padding-y = 6, 10
+         \\command = /usr/bin/fish --login
+@@ -612,6 +623,7 @@ test "parse config" {
+     try std.testing.expectEqual(FontWeight.medium, config.font_weight);
+     // invalid re-assignment keeps the previous valid value
+     try std.testing.expectEqual(FontSize{ .points = 14.5 }, config.font_size);
 +    try std.testing.expectEqual(TextCompositionStrategy.kitty, config.text_composition_strategy);
+     try std.testing.expectEqual(WindowPadding{ .first = 4, .second = 4 }, config.window_padding_x);
+     try std.testing.expectEqual(WindowPadding{ .first = 6, .second = 10 }, config.window_padding_y);
+     try std.testing.expectEqualStrings("/usr/bin/fish --login", config.command.?.shell);
 diff --git a/src/Renderer.zig b/src/Renderer.zig
-index 83e539c..d704a3b 100644
+index 9d95cd0..50aaf69 100644
 --- a/src/Renderer.zig
 +++ b/src/Renderer.zig
-@@ -65,0 +66 @@ background_alpha_cells: bool,
+@@ -63,6 +63,7 @@ background_alpha: u8,
+ /// Whether background alpha also applies to explicit terminal cell
+ /// backgrounds. Selections, cursors, and renderer overlays stay opaque.
+ background_alpha_cells: bool,
 +text_composition_strategy: Config.TextCompositionStrategy,
-@@ -138,0 +140 @@ pub const InitOptions = struct {
+ /// Keyboard focus: unfocused windows draw the cursor as a hollow
+ /// rectangle regardless of the requested style. Set by the caller.
+ focused: bool = true,
+@@ -142,6 +143,7 @@ pub const InitOptions = struct {
+     cursor_text: ?Config.TerminalColor = null,
+     background_alpha: u8 = 255,
+     background_alpha_cells: bool = false,
 +    text_composition_strategy: Config.TextCompositionStrategy = .default,
-@@ -185,0 +188 @@ pub fn init(alloc: std.mem.Allocator, font: *Font, opts: InitOptions) !Renderer
+     /// Benchmark escape hatch for comparing the superseded row path.
+     track_cell_damage: bool = true,
+     partial_cell_raster: bool = true,
+@@ -189,6 +191,7 @@ pub fn init(alloc: std.mem.Allocator, font: *Font, opts: InitOptions) !Renderer
+         .cursor_text = opts.cursor_text,
+         .background_alpha = opts.background_alpha,
+         .background_alpha_cells = opts.background_alpha_cells,
 +        .text_composition_strategy = opts.text_composition_strategy,
-@@ -669,0 +673 @@ pub fn renderPreedit(
+         .fg_scratch = .empty,
+         .face_scratch = .empty,
+         .reverse_scratch = .empty,
+@@ -674,6 +677,7 @@ pub fn renderPreedit(
+                 argb(state.colors.foreground),
+                 false,
+                 self.glyph_clip_x,
 +                self.text_composition_strategy,
-@@ -836,0 +841 @@ fn renderTextOverlay(
+             );
+         }
+         try self.blitDecoration(.underline, x, y, argb(state.colors.foreground), pixels, width, height);
+@@ -841,6 +845,7 @@ fn renderTextOverlay(
+                 argb(fg),
+                 false,
+                 self.glyph_clip_x,
 +                self.text_composition_strategy,
-@@ -1640,0 +1646 @@ fn blitDecoration(
+             );
+         }
+         x += span;
+@@ -1672,6 +1677,7 @@ fn blitDecoration(
+         color,
+         false,
+         self.glyph_clip_x,
 +        self.text_composition_strategy,
-@@ -1684,0 +1691 @@ fn drawRun(
+     );
+ }
+ 
+@@ -1716,6 +1722,7 @@ fn drawRun(
+                 argb(self.fg_scratch.items[x]),
+                 false,
+                 self.glyph_clip_x,
 +                self.text_composition_strategy,
-@@ -1754,0 +1762 @@ fn drawRun(
+             );
+         }
+         return;
+@@ -1786,6 +1793,7 @@ fn drawRun(
+             argb(self.fg_scratch.items[cluster]),
+             self.reverse_scratch.items[cluster],
+             self.glyph_clip_x,
 +            self.text_composition_strategy,
+         );
+         pen_x += sg.x_advance;
+     }
 diff --git a/src/pixel_raster.zig b/src/pixel_raster.zig
 index 9bcd3d4..9fbf24f 100644
 --- a/src/pixel_raster.zig
 +++ b/src/pixel_raster.zig
-@@ -6,0 +7 @@ const Font = @import("Font.zig");
+@@ -4,6 +4,7 @@ const std = @import("std");
+ const builtin = @import("builtin");
+ const vt = @import("ghostty-vt");
+ const Font = @import("Font.zig");
 +const Config = @import("Config.zig");
-@@ -125,0 +127 @@ pub fn blitGlyph(
+ 
+ pub const ScrollbarThumb = struct {
+     x: u31,
+@@ -123,12 +124,13 @@ pub fn blitGlyph(
+     color: u32,
+     reverse_color_glyph: bool,
+     clip_x: ?PixelRange,
 +    text_composition_strategy: Config.TextCompositionStrategy,
-@@ -131 +133 @@ pub fn blitGlyph(
+ ) void {
+     switch (g.format) {
+         .alpha => if (g.fully_opaque)
+             blitOpaqueGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x)
+         else
 -            blitAlphaGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x),
 +            blitAlphaGlyph(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x, text_composition_strategy),
-@@ -200,0 +203 @@ fn blitAlphaGlyph(
+         .bgra => if (reverse_color_glyph)
+             blitBgraGlyphAsAlpha(pixels, stride, buf_width, buf_height, g, x0, y0, color, clip_x)
+         else
+@@ -198,6 +200,7 @@ fn blitAlphaGlyph(
+     y0: i32,
+     color: u32,
+     clip_x: ?PixelRange,
 +    text_composition_strategy: Config.TextCompositionStrategy,
-@@ -208 +211 @@ fn blitAlphaGlyph(
+ ) void {
+     const clip = clipGlyph(g, x0, y0, buf_width, buf_height, clip_x) orelse return;
+     const px_start: usize = @intCast(x0 + @as(i32, @intCast(clip.gx_start)));
+@@ -205,7 +208,7 @@ fn blitAlphaGlyph(
+         const py: usize = @intCast(y0 + @as(i32, @intCast(gy)));
+         const src = g.bitmap[gy * g.width + clip.gx_start .. gy * g.width + clip.gx_end];
+         const dst = pixels[py * stride + px_start ..][0..src.len];
 -        blendAlphaSpan(dst, src, color);
 +        blendAlphaSpan(dst, src, color, text_composition_strategy);
-@@ -216 +219,6 @@ fn blitAlphaGlyph(
+     }
+ }
+ 
+@@ -213,11 +216,23 @@ fn blitAlphaGlyph(
+ /// coverage, four pixels per iteration. Produces the same value as
+ /// scalar `blend` for every pixel; zero-coverage pixels keep their
+ /// background (all-zero groups skip the store entirely).
 -fn blendAlphaSpan(noalias dst: []u32, noalias coverage: []const u8, color: u32) void {
 +fn blendAlphaSpan(
 +    noalias dst: []u32,
@@ -120,7 +349,10 @@ index 9bcd3d4..9fbf24f 100644
 +    color: u32,
 +    text_composition_strategy: Config.TextCompositionStrategy,
 +) void {
-@@ -220,0 +229,7 @@ fn blendAlphaSpan(noalias dst: []u32, noalias coverage: []const u8, color: u32)
+     std.debug.assert(dst.len == coverage.len);
+     // Foregrounds are opaque. Coverage becomes source alpha and is
+     // composited over the framebuffer's premultiplied destination.
+     std.debug.assert(color >> 24 == 0xff);
 +    if (text_composition_strategy == .kitty) {
 +        for (dst, coverage) |*pixel, cov| {
 +            if (cov == 0) continue;
@@ -128,7 +360,13 @@ index 9bcd3d4..9fbf24f 100644
 +        }
 +        return;
 +    }
-@@ -357,0 +373,63 @@ fn blend(fg: u32, bg: u32, alpha: u8) u32 {
+     const V = @Vector(16, u16);
+     const fg: V = @as(@Vector(16, u8), @bitCast([_]u32{color} ** 4));
+     // Broadcast each pixel's coverage across its four channel lanes.
+@@ -355,6 +370,69 @@ fn blend(fg: u32, bg: u32, alpha: u8) u32 {
+     const out_alpha = ((fg >> 24) * a + (bg >> 24) * na) / 255;
+     return (out_alpha << 24) | (r << 16) | (g << 8) | b;
+ }
 +fn decodeSrgb(encoded: f32) f32 {
 +    return if (encoded <= 0.04045)
 +        encoded / 12.92
@@ -192,7 +430,13 @@ index 9bcd3d4..9fbf24f 100644
 +    }
 +    return result;
 +}
-@@ -417,0 +496,8 @@ test "blend endpoints" {
+ 
+ pub fn blendPixel(dst: u32, src: *const [4]u8) u32 {
+     const alpha = @as(u32, src[3]);
+@@ -415,6 +493,14 @@ test "blend endpoints" {
+     );
+ }
+ 
 +test "kitty text composition blends in linear sRGB" {
 +    try std.testing.expectEqual(@as(u32, 0xffbcbcbc), blendKitty(0xffffffff, 0xff000000, 128));
 +    try std.testing.expectEqual(@as(u32, 0xff000000), blendKitty(0xffffffff, 0xff000000, 0));
@@ -201,11 +445,29 @@ index 9bcd3d4..9fbf24f 100644
 +    try std.testing.expectEqual(@as(u32, 0xff959cb6), blendKitty(0xffcad3f5, 0xff1a1b26, 128));
 +}
 +
-@@ -479 +565 @@ test "blendAlphaSpan matches scalar blend" {
+ test "blendRgb faint dims foreground toward background" {
+     const white: vt.color.RGB = .{ .r = 0xff, .g = 0xff, .b = 0xff };
+     const black: vt.color.RGB = .{ .r = 0, .g = 0, .b = 0 };
+@@ -476,7 +562,7 @@ test "blendAlphaSpan matches scalar blend" {
+                 g.* = bg;
+                 w.* = if (cov.* == 0) bg else blend(color, bg, cov.*);
+             }
 -            blendAlphaSpan(got[0..len], coverage[0..len], color);
 +            blendAlphaSpan(got[0..len], coverage[0..len], color, .default);
-@@ -499,2 +585,2 @@ test "opaque glyph fast path matches alpha blending with clipping" {
+             try std.testing.expectEqualSlices(u32, want[0..len], got[0..len]);
+         }
+     }
+@@ -496,8 +582,8 @@ test "opaque glyph fast path matches alpha blending with clipping" {
+ 
+     var alpha_pixels: [5 * 4]u32 = @splat(0xff123456);
+     var opaque_pixels = alpha_pixels;
 -    blitGlyph(&alpha_pixels, 5, 5, 4, &alpha_glyph, -1, 2, 0xffabcdef, false, null);
 -    blitGlyph(&opaque_pixels, 5, 5, 4, &opaque_glyph, -1, 2, 0xffabcdef, false, null);
 +    blitGlyph(&alpha_pixels, 5, 5, 4, &alpha_glyph, -1, 2, 0xffabcdef, false, null, .default);
 +    blitGlyph(&opaque_pixels, 5, 5, 4, &opaque_glyph, -1, 2, 0xffabcdef, false, null, .default);
+     try std.testing.expectEqualSlices(u32, &alpha_pixels, &opaque_pixels);
+ }
+ 
+-- 
+2.54.0
+
