@@ -1,0 +1,357 @@
+From 0eb3532c39e5136f11541b068c3d7326a4fdaab9 Mon Sep 17 00:00:00 2001
+From: John Rinehart <johnrichardrinehart@gmail.com>
+Date: Sat, 5 Sep 2026 16:14:39 -0400
+Subject: [PATCH] keyboard: add configurable line scrolling
+
+Monstar supports page and boundary scrollback navigation. It has no
+shortcut for one-line movement.
+
+Handle one-line navigation on the primary screen. Let users set each
+shortcut. Use Shift+Up and Shift+Down by default. Keep alternate-screen
+input unchanged.
+---
+ README.md      |  5 +++
+ dist/monstar.1 |  3 ++
+ dist/monstar.5 | 28 +++++++++++++++++
+ src/App.zig    | 55 +++++++++++++++++++++++++--------
+ src/Config.zig | 84 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 163 insertions(+), 12 deletions(-)
+
+diff --git a/README.md b/README.md
+index fe14fb0..67d60b2 100644
+--- a/README.md
++++ b/README.md
+@@ -133,6 +133,10 @@ Other settings:
+   motion after release (default `true`).
+ - **copy-highlight-duration** — Post-copy selection flash in milliseconds;
+   `0` disables the flash (default `200`).
++- **scroll-line-up-key / scroll-line-down-key** — Shortcuts that move the
++  scrollback viewport by one line. The defaults are `shift+up` and
++  `shift+down`. Combine `shift`, `ctrl`, `alt`, or `super` with one ASCII key
++  or a named navigation key.
+ - **background / foreground / cursor-color / cursor-text** — Terminal colors
+   as `#RRGGBB` or `RRGGBB`; explicit colors override the theme.
+   `cursor-color` and `cursor-text` also accept `cell-foreground` and
+@@ -159,6 +163,7 @@ settings apply to new windows.
+ | `Ctrl+Shift+F` | Search scrollback |
+ | `Ctrl+Shift+N` | Open a new window in the current directory |
+ | `Ctrl+Shift+,` | Reload configuration |
++| `Shift+Up` / `Shift+Down` | Scroll up / down one line |
+ | `Shift+PageUp` / `Shift+PageDown` | Scroll back / forward one page |
+ | `Shift+Home` / `Shift+End` | Scroll to the top / bottom of scrollback |
+ | `Ctrl++` / `Ctrl+=` / `Ctrl+-` | Adjust the font size |
+diff --git a/dist/monstar.1 b/dist/monstar.1
+index c3770c0..e9c9c98 100644
+--- a/dist/monstar.1
++++ b/dist/monstar.1
+@@ -199,6 +199,9 @@ Jump to the next OSC 133 prompt.
+ .B Ctrl+Shift+Z
+ Jump to the previous OSC 133 prompt.
+ .TP
++.BR Shift+Up " or " Shift+Down
++Scroll up or down by one terminal line.
++.TP
+ .BR Shift+PageUp " or " Shift+PageDown
+ Scroll backward or forward by one terminal page.
+ .TP
+diff --git a/dist/monstar.5 b/dist/monstar.5
+index bef1b44..a956d74 100644
+--- a/dist/monstar.5
++++ b/dist/monstar.5
+@@ -194,6 +194,34 @@ The defaults are
+ and
+ .BR discrete:3 .
+ .TP
++.BI scroll-line-up-key " = shortcut"
++Set the shortcut that scrolls up by one terminal line.
++The default is
++.BR shift+up .
++.TP
++.BI scroll-line-down-key " = shortcut"
++Set the shortcut that scrolls down by one terminal line.
++The default is
++.BR shift+down .
++.PP
++A shortcut accepts
++.BR shift ,
++.BR ctrl ,
++.BR alt ,
++or
++.B super
++modifiers and one key.
++Use one ASCII key or a named navigation key:
++.BR up ,
++.BR down ,
++.BR left ,
++.BR right ,
++.BR page-up ,
++.BR page-down ,
++.BR home ,
++or
++.BR end .
++.TP
+ .BI scrollback-limit " = bytes"
+ Set the terminal page-storage limit, including the active screen.
+ The default is 50000000 bytes.
+diff --git a/src/App.zig b/src/App.zig
+index 056dfc4..0c1da8b 100644
+--- a/src/App.zig
++++ b/src/App.zig
+@@ -5009,6 +5009,8 @@ fn handleSearchKey(self: *App, event: vt.input.KeyEvent) void {
+ }
+ 
+ const ScrollbackKeyAction = enum {
++    line_up,
++    line_down,
+     page_up,
+     page_down,
+     top,
+@@ -5016,12 +5018,15 @@ const ScrollbackKeyAction = enum {
+ };
+ 
+ fn scrollbackKeyAction(
++    config: *const Config,
+     active_screen: vt.ScreenSet.Key,
+     event: vt.input.KeyEvent,
+ ) ?ScrollbackKeyAction {
+     // Like foot, leave scrollback shortcuts to full-screen applications.
+-    if (active_screen != .primary or !event.mods.shift or
+-        event.mods.ctrl or event.mods.alt or event.mods.super) return null;
++    if (active_screen != .primary) return null;
++    if (config.scroll_line_up_key.matches(event)) return .line_up;
++    if (config.scroll_line_down_key.matches(event)) return .line_down;
++    if (!event.mods.shift or event.mods.ctrl or event.mods.alt or event.mods.super) return null;
+ 
+     return switch (event.key) {
+         .page_up => .page_up,
+@@ -5033,13 +5038,15 @@ fn scrollbackKeyAction(
+ }
+ 
+ fn handleScrollbackKey(self: *App, event: vt.input.KeyEvent) bool {
+-    const scroll = scrollbackKeyAction(self.term.screens.active_key, event) orelse return false;
++    const scroll = scrollbackKeyAction(&self.config, self.term.screens.active_key, event) orelse return false;
+     // Consume the matching release too, but move only on press/repeat.
+     if (event.action == .release) return true;
+ 
+     self.stopFling();
+     const rows: isize = @intCast(self.term.rows);
+     switch (scroll) {
++        .line_up => self.term.screens.active.pages.scroll(.{ .delta_row = -1 }),
++        .line_down => self.term.screens.active.pages.scroll(.{ .delta_row = 1 }),
+         .page_up => self.term.screens.active.pages.scroll(.{ .delta_row = -rows }),
+         .page_down => self.term.screens.active.pages.scroll(.{ .delta_row = rows }),
+         .top => self.term.screens.active.pages.scroll(.top),
+@@ -6069,40 +6076,64 @@ test "search backspace removes one UTF-8 codepoint" {
+     try std.testing.expect(!truncateLastUtf8(&query));
+ }
+ 
+-test "scrollback keys require shift on the primary screen" {
++test "scrollback keys require supported modifiers on the primary screen" {
++    var config: Config = .{};
+     const shifted: vt.input.KeyMods = .{ .shift = true };
++    const ctrl_shifted: vt.input.KeyMods = .{ .shift = true, .ctrl = true };
++    try std.testing.expectEqual(
++        ScrollbackKeyAction.line_up,
++        scrollbackKeyAction(&config, .primary, .{ .key = .arrow_up, .mods = shifted }).?,
++    );
++    try std.testing.expectEqual(
++        ScrollbackKeyAction.line_down,
++        scrollbackKeyAction(&config, .primary, .{ .key = .arrow_down, .mods = shifted }).?,
++    );
+     try std.testing.expectEqual(
+         ScrollbackKeyAction.page_up,
+-        scrollbackKeyAction(.primary, .{ .key = .page_up, .mods = shifted }).?,
++        scrollbackKeyAction(&config, .primary, .{ .key = .page_up, .mods = shifted }).?,
+     );
+     try std.testing.expectEqual(
+         ScrollbackKeyAction.page_down,
+-        scrollbackKeyAction(.primary, .{ .key = .page_down, .mods = shifted }).?,
++        scrollbackKeyAction(&config, .primary, .{ .key = .page_down, .mods = shifted }).?,
+     );
+     try std.testing.expectEqual(
+         ScrollbackKeyAction.top,
+-        scrollbackKeyAction(.primary, .{ .key = .home, .mods = shifted }).?,
++        scrollbackKeyAction(&config, .primary, .{ .key = .home, .mods = shifted }).?,
+     );
+     try std.testing.expectEqual(
+         ScrollbackKeyAction.bottom,
+-        scrollbackKeyAction(.primary, .{ .key = .end, .mods = shifted }).?,
++        scrollbackKeyAction(&config, .primary, .{ .key = .end, .mods = shifted }).?,
+     );
+ 
+     try std.testing.expectEqual(
+         null,
+-        scrollbackKeyAction(.alternate, .{ .key = .page_up, .mods = shifted }),
++        scrollbackKeyAction(&config, .alternate, .{ .key = .arrow_up, .mods = shifted }),
++    );
++    try std.testing.expectEqual(
++        null,
++        scrollbackKeyAction(&config, .primary, .{ .key = .arrow_up, .mods = ctrl_shifted }),
+     );
+     try std.testing.expectEqual(
+         null,
+-        scrollbackKeyAction(.primary, .{ .key = .page_up }),
++        scrollbackKeyAction(&config, .primary, .{ .key = .page_up }),
+     );
+     try std.testing.expectEqual(
+         null,
+-        scrollbackKeyAction(.primary, .{
++        scrollbackKeyAction(&config, .primary, .{
+             .key = .page_up,
+-            .mods = .{ .shift = true, .ctrl = true },
++            .mods = ctrl_shifted,
+         }),
+     );
++
++    config.scroll_line_up_key.mods.ctrl = true;
++    try std.testing.expectEqual(
++        ScrollbackKeyAction.line_up,
++        scrollbackKeyAction(&config, .primary, .{ .key = .arrow_up, .mods = ctrl_shifted }).?,
++    );
++    try std.testing.expectEqual(
++        null,
++        scrollbackKeyAction(&config, .primary, .{ .key = .arrow_up, .mods = shifted }),
++    );
+ }
+ 
+ test "scrollback search scrolls a history match into the viewport" {
+diff --git a/src/Config.zig b/src/Config.zig
+index 374e111..cfbc103 100644
+--- a/src/Config.zig
++++ b/src/Config.zig
+@@ -35,6 +35,19 @@ pub const MouseScrollMultiplier = struct {
+     discrete: f64 = 3,
+ };
+ 
++pub const Shortcut = struct {
++    key: vt.input.Key,
++    mods: vt.input.KeyMods = .{},
++
++    pub fn matches(self: Shortcut, event: vt.input.KeyEvent) bool {
++        return self.key == event.key and
++            self.mods.shift == event.mods.shift and
++            self.mods.ctrl == event.mods.ctrl and
++            self.mods.alt == event.mods.alt and
++            self.mods.super == event.mods.super;
++    }
++};
++
+ pub const Theme = config_theme.Theme;
+ pub const ThemeColors = config_theme.ThemeColors;
+ pub const TerminalColor = config_theme.TerminalColor;
+@@ -118,6 +131,9 @@ image_storage_limit: usize = 320 * 1000 * 1000,
+ mouse_scroll_multiplier: MouseScrollMultiplier = .{},
+ /// Whether finger scrolling continues with inertial motion after release.
+ inertial_scrolling: bool = true,
++/// Shortcuts that move the primary-screen scrollback viewport by one line.
++scroll_line_up_key: Shortcut = .{ .key = .arrow_up, .mods = .{ .shift = true } },
++scroll_line_down_key: Shortcut = .{ .key = .arrow_down, .mods = .{ .shift = true } },
+ /// Duration of the post-copy selection flash in milliseconds; 0 disables it.
+ copy_highlight_duration: u32 = 200,
+ /// Effective alpha of the default terminal background. Keeping this as an
+@@ -253,6 +269,10 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
+         self.image_storage_limit = limit;
+     } else if (std.mem.eql(u8, key, "mouse-scroll-multiplier")) {
+         self.mouse_scroll_multiplier = try parseMouseScrollMultiplier(self.mouse_scroll_multiplier, value);
++    } else if (std.mem.eql(u8, key, "scroll-line-up-key")) {
++        self.scroll_line_up_key = try parseShortcut(value);
++    } else if (std.mem.eql(u8, key, "scroll-line-down-key")) {
++        self.scroll_line_down_key = try parseShortcut(value);
+     } else if (std.mem.eql(u8, key, "inertial-scrolling")) {
+         self.inertial_scrolling = if (std.mem.eql(u8, value, "true"))
+             true
+@@ -337,6 +357,51 @@ fn parseMetricModifier(value: []const u8) error{InvalidValue}!MetricModifier {
+     };
+ }
+ 
++fn parseShortcut(value: []const u8) error{InvalidValue}!Shortcut {
++    var key: ?vt.input.Key = null;
++    var mods: vt.input.KeyMods = .{};
++    var tokens = std.mem.splitScalar(u8, value, '+');
++    while (tokens.next()) |raw_token| {
++        const token = std.mem.trim(u8, raw_token, " \t");
++        if (token.len == 0) return error.InvalidValue;
++
++        if (std.ascii.eqlIgnoreCase(token, "shift")) {
++            if (mods.shift) return error.InvalidValue;
++            mods.shift = true;
++        } else if (std.ascii.eqlIgnoreCase(token, "ctrl") or
++            std.ascii.eqlIgnoreCase(token, "control"))
++        {
++            if (mods.ctrl) return error.InvalidValue;
++            mods.ctrl = true;
++        } else if (std.ascii.eqlIgnoreCase(token, "alt")) {
++            if (mods.alt) return error.InvalidValue;
++            mods.alt = true;
++        } else if (std.ascii.eqlIgnoreCase(token, "super")) {
++            if (mods.super) return error.InvalidValue;
++            mods.super = true;
++        } else {
++            if (key != null) return error.InvalidValue;
++            key = try parseShortcutKey(token);
++        }
++    }
++    return .{ .key = key orelse return error.InvalidValue, .mods = mods };
++}
++
++fn parseShortcutKey(value: []const u8) error{InvalidValue}!vt.input.Key {
++    if (value.len == 1) {
++        return vt.input.Key.fromASCII(std.ascii.toLower(value[0])) orelse error.InvalidValue;
++    }
++    if (std.ascii.eqlIgnoreCase(value, "up")) return .arrow_up;
++    if (std.ascii.eqlIgnoreCase(value, "down")) return .arrow_down;
++    if (std.ascii.eqlIgnoreCase(value, "left")) return .arrow_left;
++    if (std.ascii.eqlIgnoreCase(value, "right")) return .arrow_right;
++    if (std.ascii.eqlIgnoreCase(value, "page-up")) return .page_up;
++    if (std.ascii.eqlIgnoreCase(value, "page-down")) return .page_down;
++    if (std.ascii.eqlIgnoreCase(value, "home")) return .home;
++    if (std.ascii.eqlIgnoreCase(value, "end")) return .end;
++    return vt.input.Key.fromW3C(value) orelse error.InvalidValue;
++}
++
+ fn parseCommand(arena: std.mem.Allocator, value: []const u8) SetError!Command {
+     const trimmed = std.mem.trim(u8, value, " \t");
+     const mode: std.meta.Tag(Command), const text = mode: {
+@@ -538,6 +603,14 @@ test "defaults" {
+     try std.testing.expectEqual(@as(f64, 1), config.mouse_scroll_multiplier.precision);
+     try std.testing.expectEqual(@as(f64, 3), config.mouse_scroll_multiplier.discrete);
+     try std.testing.expect(config.inertial_scrolling);
++    try std.testing.expect(config.scroll_line_up_key.matches(.{
++        .key = .arrow_up,
++        .mods = .{ .shift = true },
++    }));
++    try std.testing.expect(config.scroll_line_down_key.matches(.{
++        .key = .arrow_down,
++        .mods = .{ .shift = true },
++    }));
+     try std.testing.expectEqual(@as(u32, 200), config.copy_highlight_duration);
+     try std.testing.expectEqual(@as(u8, 255), config.background_opacity);
+     try std.testing.expect(config.background_blur);
+@@ -578,6 +651,9 @@ test "parse config" {
+         \\scrollback-limit = 50000000
+         \\image-storage-limit = 50000000
+         \\mouse-scroll-multiplier = precision:1.5,discrete:5
++        \\scroll-line-up-key = ctrl+shift+k
++        \\scroll-line-down-key = alt+j
++        \\scroll-line-up-key = shift+not-a-key
+         \\inertial-scrolling = false
+         \\copy-highlight-duration = 250
+         \\background-opacity = 0.8
+@@ -611,6 +687,14 @@ test "parse config" {
+     try std.testing.expectEqual(@as(usize, 50_000_000), config.image_storage_limit);
+     try std.testing.expectEqual(@as(f64, 1.5), config.mouse_scroll_multiplier.precision);
+     try std.testing.expectEqual(@as(f64, 5), config.mouse_scroll_multiplier.discrete);
++    try std.testing.expect(config.scroll_line_up_key.matches(.{
++        .key = .key_k,
++        .mods = .{ .ctrl = true, .shift = true },
++    }));
++    try std.testing.expect(config.scroll_line_down_key.matches(.{
++        .key = .key_j,
++        .mods = .{ .alt = true },
++    }));
+     try std.testing.expect(!config.inertial_scrolling);
+     try std.testing.expectEqual(@as(u32, 250), config.copy_highlight_duration);
+     try std.testing.expectEqual(@as(u8, 204), config.background_opacity);
+-- 
+2.54.0
+
