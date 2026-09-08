@@ -150,11 +150,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1788567844,
-        "narHash": "sha256-iPxqa5nTvu0PiLjCF1sBqEu+kBvcQ98xVtxg8Q8D604=",
+        "lastModified": 1788866697,
+        "narHash": "sha256-plhbAVzH0/ASLb8ePbUbiuk+iWyg2u61bzx6r82WAa8=",
         "owner": "rockorager",
         "repo": "monstar",
-        "rev": "6cf9c9f3b5f297cfdc2798484b324187d6ce9dc5",
+        "rev": "b983eacc00c751c86a3568b10bff28ca42c84c99",
         "type": "github"
       },
       "original": {
