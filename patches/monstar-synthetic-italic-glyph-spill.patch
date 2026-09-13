@@ -1,0 +1,87 @@
+From 7c2b0fee0d8160fea56a4716671b3089615331d4 Mon Sep 17 00:00:00 2001
+From: John Rinehart <johnrichardrinehart@gmail.com>
+Date: Sun, 13 Sep 2026 17:39:16 -0400
+Subject: [PATCH] renderer: include glyph spill in synthetic italic masks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+One-column symbols may rasterize into the following blank cell, while wide glyph heads occupy their spacer tail. Text runs stop before those blank or tail cells, so the synthetic-italic coverage mask was one cell narrower than the glyph constraint and maxGlyphCoverage asserted.
+
+Reproduction: run `printf '\033[3m→\033[0m'` in Monstar with `synthetic-italic = true`; a ReleaseSafe build aborts in maxGlyphCoverage because clip_end is 20 while mask_width is 10.
+
+Extend the synthetic raster and composite range to the furthest constrained glyph cell. Cover both symbol spill and wide-cell tails with a regression test.
+---
+ src/Renderer.zig | 42 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 40 insertions(+), 2 deletions(-)
+
+diff --git a/src/Renderer.zig b/src/Renderer.zig
+index 1ed730d..5dfdf25 100644
+--- a/src/Renderer.zig
++++ b/src/Renderer.zig
+@@ -1747,6 +1747,43 @@ test "synthetic italic run keeps maximum overlapping coverage" {
+     try std.testing.expectEqualSlices(u8, &.{ 0, 180, 0 }, &mask);
+ }
+ 
++fn textRunRasterEnd(raws: []const vt.Cell, start: u31, end: u31, cols: u31) u31 {
++    std.debug.assert(start < end and end <= cols);
++    var raster_end = end;
++    for (start..end) |x| {
++        const constraint_end: u31 = @intCast(
++            x + @as(usize, glyph_constraints.constraintWidth(raws, x, cols)),
++        );
++        raster_end = @max(raster_end, @min(cols, constraint_end));
++    }
++    return raster_end;
++}
++
++test "synthetic italic raster span includes glyph spill" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    var term: vt.Terminal = try .init(testing.io, alloc, .{ .cols = 4, .rows = 1 });
++    defer term.deinit(alloc);
++    var stream = term.vtStream();
++    defer stream.deinit();
++
++    stream.nextSlice("界");
++    var state: vt.RenderState = .empty;
++    defer state.deinit(alloc);
++    try state.update(alloc, &term);
++    var raws = state.row_data.get(0).cells.items(.raw);
++    try testing.expectEqual(.wide, raws[0].wide);
++    try testing.expectEqual(.spacer_tail, raws[1].wide);
++    try testing.expectEqual(@as(u31, 2), textRunRasterEnd(raws, 0, 1, 4));
++
++    term.fullReset();
++    stream.nextSlice("→");
++    try state.update(alloc, &term);
++    raws = state.row_data.get(0).cells.items(.raw);
++    try testing.expectEqual(@as(u21, 0), glyph_constraints.cellCodepoint(raws[1]));
++    try testing.expectEqual(@as(u31, 2), textRunRasterEnd(raws, 0, 1, 4));
++}
++
+ fn blitItalicMask(
+     self: *Renderer,
+     mask: []const u8,
+@@ -1857,7 +1894,8 @@ fn drawRun(
+ 
+     const shaped = try self.text_shaper.shape(face_index, face_style, end - start);
+     const synthetic_run = font.face(face_index).synthetic_italic;
+-    const run_width = (end - start) * font.cell_width;
++    const raster_end = if (synthetic_run) textRunRasterEnd(raws, start, end, cols) else end;
++    const run_width = (raster_end - start) * font.cell_width;
+     if (synthetic_run) {
+         try self.italic_mask_scratch.resize(self.alloc, run_width * font.cell_height);
+         @memset(self.italic_mask_scratch.items, 0);
+@@ -1947,7 +1985,7 @@ fn drawRun(
+         self.italic_mask_scratch.items,
+         run_width,
+         start,
+-        end,
++        raster_end,
+         y,
+         pixels,
+         width,
+-- 
+2.54.0
+
