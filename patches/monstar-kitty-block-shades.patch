@@ -1,7 +1,7 @@
-From ee23a2f4b6a71793f6c9766739a20adc0286b1f6 Mon Sep 17 00:00:00 2001
+From e8a6ec130bd7906b94bf4d4af025d9805e64b5c3 Mon Sep 17 00:00:00 2001
 From: John Rinehart <johnrichardrinehart@gmail.com>
 Date: Thu, 3 Sep 2026 09:22:06 -0400
-Subject: [PATCH] sprite: add kitty block shade patterns
+Subject: [PATCH 3/3] sprite: add kitty block shade patterns
 
 ---
  src/App.zig               |  1 +
@@ -12,10 +12,10 @@ Subject: [PATCH] sprite: add kitty block shade patterns
  5 files changed, 119 insertions(+), 6 deletions(-)
 
 diff --git a/src/App.zig b/src/App.zig
-index 5d93416..52415f6 100644
+index d17d6f1..4924ebd 100644
 --- a/src/App.zig
 +++ b/src/App.zig
-@@ -440,6 +440,7 @@ fn fontOptions(config: Config) Font.Options {
+@@ -472,6 +472,7 @@ fn fontOptions(config: Config) Font.Options {
          .weight = config.font_weight,
          .synthetic_italic = config.synthetic_italic,
          .synthetic_italic_weight = config.synthetic_italic_weight,
@@ -24,66 +24,66 @@ index 5d93416..52415f6 100644
  }
  
 diff --git a/src/Config.zig b/src/Config.zig
-index 134b57b..ee48a0d 100644
+index bf072b1..0eb2032 100644
 --- a/src/Config.zig
 +++ b/src/Config.zig
-@@ -91,6 +91,10 @@ pub const TextCompositionStrategy = enum {
-     default,
-     kitty,
+@@ -88,6 +88,10 @@ pub const MetricModifier = union(enum) {
+     }
  };
+ 
 +pub const BlockShadeStyle = enum {
 +    default,
 +    kitty,
 +};
- 
  pub const FontWeight = enum {
      default,
-@@ -114,6 +118,7 @@ font_size: FontSize = .{ .points = 12 },
+     medium,
+@@ -108,6 +112,7 @@ font_size: FontSize = .{ .points = 12 },
+ /// Signed physical-pixel or percentage adjustment to the font's natural cell
  /// height. Unset preserves the natural metrics.
  adjust_cell_height: ?MetricModifier = null,
- text_composition_strategy: TextCompositionStrategy = .default,
 +block_shade_style: BlockShadeStyle = .default,
  /// Minimum window padding in logical pixels. One configured value applies to
  /// both sides; two values are left/right for X and top/bottom for Y.
  window_padding_x: WindowPadding = .{},
-@@ -267,6 +272,8 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
+@@ -261,6 +266,8 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
+         self.font_size = try parseFontSize(value);
+     } else if (std.mem.eql(u8, key, "adjust-cell-height")) {
          self.adjust_cell_height = try parseMetricModifier(value);
-     } else if (std.mem.eql(u8, key, "text-composition-strategy")) {
-         self.text_composition_strategy = std.meta.stringToEnum(TextCompositionStrategy, value) orelse return error.InvalidValue;
 +    } else if (std.mem.eql(u8, key, "block-shade-style")) {
 +        self.block_shade_style = std.meta.stringToEnum(BlockShadeStyle, value) orelse return error.InvalidValue;
      } else if (std.mem.eql(u8, key, "window-padding-x")) {
          self.window_padding_x = try parseWindowPadding(value);
      } else if (std.mem.eql(u8, key, "window-padding-y")) {
-@@ -568,6 +575,7 @@ test "defaults" {
+@@ -562,6 +569,7 @@ test "defaults" {
+     try std.testing.expect(!config.synthetic_italic);
+     try std.testing.expectEqual(SyntheticItalicWeight.regular, config.synthetic_italic_weight);
      try std.testing.expectEqual(FontSize{ .points = 12 }, config.font_size);
-     try std.testing.expectEqual(TextCompositionStrategy.default, config.text_composition_strategy);
-     try std.testing.expectEqual(@as(u8, 128), config.faint_opacity);
 +    try std.testing.expectEqual(BlockShadeStyle.default, config.block_shade_style);
      try std.testing.expectEqual(WindowPadding{}, config.window_padding_x);
      try std.testing.expectEqual(WindowPadding{}, config.window_padding_y);
      try std.testing.expectEqual(@as(?Command, null), config.command);
-@@ -614,6 +622,7 @@ test "parse config" {
+@@ -615,6 +623,7 @@ test "parse config" {
+         \\synthetic-italic = true
          \\synthetic-italic-weight = bold
          \\font-size = 14.5
-         \\text-composition-strategy = kitty
 +        \\block-shade-style = kitty
          \\window-padding-x = 4
          \\window-padding-y = 6, 10
          \\command = /usr/bin/fish --login
-@@ -651,6 +660,7 @@ test "parse config" {
+@@ -654,6 +663,7 @@ test "parse config" {
+     try std.testing.expectEqual(SyntheticItalicWeight.bold, config.synthetic_italic_weight);
      // invalid re-assignment keeps the previous valid value
      try std.testing.expectEqual(FontSize{ .points = 14.5 }, config.font_size);
-     try std.testing.expectEqual(TextCompositionStrategy.kitty, config.text_composition_strategy);
 +    try std.testing.expectEqual(BlockShadeStyle.kitty, config.block_shade_style);
      try std.testing.expectEqual(WindowPadding{ .first = 4, .second = 4 }, config.window_padding_x);
      try std.testing.expectEqual(WindowPadding{ .first = 6, .second = 10 }, config.window_padding_y);
      try std.testing.expectEqualStrings("/usr/bin/fish --login", config.command.?.shell);
 diff --git a/src/Font.zig b/src/Font.zig
-index 207995f..cc5bea2 100644
+index 995761d..69c7a1d 100644
 --- a/src/Font.zig
 +++ b/src/Font.zig
-@@ -122,6 +122,7 @@ pub const Options = struct {
+@@ -123,6 +123,7 @@ pub const Options = struct {
      weight: Config.FontWeight = .default,
      synthetic_italic: bool = false,
      synthetic_italic_weight: Config.SyntheticItalicWeight = .regular,
@@ -91,7 +91,7 @@ index 207995f..cc5bea2 100644
  };
  
  /// Immutable Fontconfig results. Rasterizers need independent FreeType,
-@@ -1153,7 +1154,14 @@ pub fn spriteGlyph(
+@@ -1218,7 +1219,14 @@ pub fn spriteGlyph(
      if (gop.found_existing) return gop.value_ptr;
      errdefer _ = self.sprite_glyphs.remove(key);
  

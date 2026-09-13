@@ -14,9 +14,7 @@ in
   };
   config.dev.johnrinehart.monstar.patches = lib.mkBefore [
     ../patches/monstar-font-weight.patch
-    ../patches/monstar-kitty-text-composition.patch
     ../patches/monstar-synthetic-italic.patch
-    ../patches/monstar-faint-opacity.patch
     ../patches/monstar-kitty-block-shades.patch
     ../patches/monstar-ssh.patch
   ];

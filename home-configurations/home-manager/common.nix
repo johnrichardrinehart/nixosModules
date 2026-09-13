@@ -189,8 +189,6 @@ in
         synthetic-italic = true
         synthetic-italic-weight = bold
         font-size = 12
-        text-composition-strategy = kitty
-        faint-opacity = 0.4
         block-shade-style = kitty
         foreground = #CAD3F5
         background = #000000
