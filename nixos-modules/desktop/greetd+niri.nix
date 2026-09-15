@@ -203,6 +203,9 @@ in
             block. A downstream definition replaces the default bindings.
           '';
         };
+        displayModeWatch.enable = lib.mkEnableOption "automatic Niri display-mode recovery" // {
+          default = true;
+        };
       };
       waybar = {
         systemd.enable = lib.mkEnableOption "Waybar systemd service";
@@ -281,7 +284,7 @@ in
       };
     };
 
-    systemd.user.services.niri-display-mode-watch = {
+    systemd.user.services.niri-display-mode-watch = lib.mkIf cfg.niri.displayModeWatch.enable {
       description = "Keep niri display mode recoverable after output disconnects";
       wantedBy = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
