@@ -18,11 +18,17 @@
     inputs.home-manager.nixosModules.default
     inputs.sops-nix.nixosModules.default
     (
-      { config, lib, ... }:
+      {
+        config,
+        lib,
+        pkgs,
+        ...
+      }:
       {
         options.dev.johnrinehart.users.terminalEmulator = {
           package = lib.mkOption {
             type = lib.types.package;
+            default = pkgs.kitty;
             description = "Terminal emulator package for the primary user.";
           };
           integrations.kitty.enable = lib.mkEnableOption "KiTTY-specific terminal integration";
