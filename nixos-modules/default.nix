@@ -93,6 +93,7 @@
     ./tmux-socket.nix
     ./virtualisation.nix
     ./voice-dictation.nix
+    ./profiles/laptop.nix
 
     ./desktop/default.nix
     ./desktop/hyprland.nix
