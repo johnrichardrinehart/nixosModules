@@ -1,32 +1,5 @@
-From d76e9130495630c1889b1555f499f6c980250804 Mon Sep 17 00:00:00 2001
-From: John Rinehart <johnrichardrinehart@gmail.com>
-Date: Wed, 2 Sep 2026 15:25:47 -0400
-Subject: [PATCH 2/3] font: apply synthetic italic transforms
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
-
-Apply Fontconfig synthetic italic transforms when the requested italic face is unavailable. Keep the selected source weight configurable and use KiTTY-compatible glyph placement.
-
-Synthetic glyphs can extend beyond their logical text run: wide glyphs occupy a spacer tail, and one-column symbols may rasterize into the following blank cell. Size and composite the synthetic coverage mask through the furthest constrained glyph cell.
-
-Reproduction with a ReleaseSafe build:
-
-    printf '\033[3m→\033[0m'
-
-Run Monstar with `synthetic-italic = true` and a font requiring synthetic italics. Before the mask fix, maxGlyphCoverage aborts with clip_end 20 and mask_width 10. The extended raster span keeps the process alive and preserves both symbol spill and wide-cell tails.
----
- dist/monstar.5       |  11 +++
- src/App.zig          |   6 +-
- src/Config.zig       |  21 ++++
- src/Font.zig         | 204 +++++++++++++++++++++++++++++++++-----
- src/Renderer.zig     | 230 ++++++++++++++++++++++++++++++++++++++++---
- src/bench.zig        |   6 +-
- src/pixel_raster.zig |   2 +-
- 7 files changed, 441 insertions(+), 39 deletions(-)
-
 diff --git a/dist/monstar.5 b/dist/monstar.5
-index 286324d..8779c65 100644
+index bbff5ed..e91f11a 100644
 --- a/dist/monstar.5
 +++ b/dist/monstar.5
 @@ -116,6 +116,17 @@ Bold faces continue to request the bold weight.
@@ -48,10 +21,10 @@ index 286324d..8779c65 100644
  Set the font size.
  Bare values and
 diff --git a/src/App.zig b/src/App.zig
-index 88234db..d17d6f1 100644
+index 0d451a9..5e1da0c 100644
 --- a/src/App.zig
 +++ b/src/App.zig
-@@ -468,7 +468,11 @@ fn tmpDirPath(environ: std.process.Environ) []const u8 {
+@@ -464,7 +464,11 @@ fn tmpDirPath(environ: std.process.Environ) []const u8 {
  /// copies them via execve). `config` strings must remain valid until the
  /// first successful reload or App teardown.
  fn fontOptions(config: Config) Font.Options {
@@ -65,10 +38,10 @@ index 88234db..d17d6f1 100644
  
  pub fn init(
 diff --git a/src/Config.zig b/src/Config.zig
-index a881e51..bf072b1 100644
+index 7e5b16d..72a6aa8 100644
 --- a/src/Config.zig
 +++ b/src/Config.zig
-@@ -92,10 +92,16 @@ pub const FontWeight = enum {
+@@ -91,10 +91,16 @@ pub const FontWeight = enum {
      default,
      medium,
  };
@@ -85,7 +58,7 @@ index a881e51..bf072b1 100644
  /// Bare and `pt` values are typographic points; `px` values are logical
  /// pixels. Both apply the output's fractional scale during rasterization.
  font_size: FontSize = .{ .points = 12 },
-@@ -242,6 +248,15 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
+@@ -237,6 +243,15 @@ pub fn set(self: *Config, arena: std.mem.Allocator, key: []const u8, value: []co
          self.font_family = try arena.dupeZ(u8, value);
      } else if (std.mem.eql(u8, key, "font-weight")) {
          self.font_weight = std.meta.stringToEnum(FontWeight, value) orelse return error.InvalidValue;
@@ -101,7 +74,7 @@ index a881e51..bf072b1 100644
      } else if (std.mem.eql(u8, key, "font-size")) {
          self.font_size = try parseFontSize(value);
      } else if (std.mem.eql(u8, key, "adjust-cell-height")) {
-@@ -544,6 +559,8 @@ test "defaults" {
+@@ -535,6 +550,8 @@ test "defaults" {
      try std.testing.expectEqualStrings(default_app_id, config.app_id);
      try std.testing.expectEqualStrings("monospace", config.font_family);
      try std.testing.expectEqual(FontWeight.default, config.font_weight);
@@ -110,7 +83,7 @@ index a881e51..bf072b1 100644
      try std.testing.expectEqual(FontSize{ .points = 12 }, config.font_size);
      try std.testing.expectEqual(WindowPadding{}, config.window_padding_x);
      try std.testing.expectEqual(WindowPadding{}, config.window_padding_y);
-@@ -595,6 +612,8 @@ test "parse config" {
+@@ -578,6 +595,8 @@ test "parse config" {
          \\app-id = com.example.scratchpad
          \\font-family = Fira Code
          \\font-weight = medium
@@ -119,7 +92,7 @@ index a881e51..bf072b1 100644
          \\font-size = 14.5
          \\window-padding-x = 4
          \\window-padding-y = 6, 10
-@@ -631,6 +650,8 @@ test "parse config" {
+@@ -610,6 +629,8 @@ test "parse config" {
      try std.testing.expectEqualStrings("com.example.scratchpad", config.app_id);
      try std.testing.expectEqualStrings("Fira Code", config.font_family);
      try std.testing.expectEqual(FontWeight.medium, config.font_weight);
@@ -129,10 +102,10 @@ index a881e51..bf072b1 100644
      try std.testing.expectEqual(FontSize{ .points = 14.5 }, config.font_size);
      try std.testing.expectEqual(WindowPadding{ .first = 4, .second = 4 }, config.window_padding_x);
 diff --git a/src/Font.zig b/src/Font.zig
-index 30afa17..995761d 100644
+index dd9f5e6..31f547f 100644
 --- a/src/Font.zig
 +++ b/src/Font.zig
-@@ -86,9 +86,13 @@ pub const FaceStyle = enum(u2) {
+@@ -85,9 +85,13 @@ pub const FaceStyle = enum(u2) {
          else if (italic) .italic else .regular;
      }
  
@@ -148,7 +121,7 @@ index 30afa17..995761d 100644
                  .default => null,
                  .medium => c.FC_WEIGHT_MEDIUM,
              },
-@@ -104,18 +108,21 @@ pub const FaceStyle = enum(u2) {
+@@ -103,18 +107,21 @@ pub const FaceStyle = enum(u2) {
      }
  };
  
@@ -176,7 +149,7 @@ index 30afa17..995761d 100644
  };
  
  /// Immutable Fontconfig results. Rasterizers need independent FreeType,
-@@ -190,6 +197,8 @@ pub const Discovery = struct {
+@@ -189,6 +196,8 @@ pub const Discovery = struct {
  pub const Face = struct {
      ft_face: c.FT_Face,
      hb_font: *c.hb_font_t,
@@ -185,31 +158,29 @@ index 30afa17..995761d 100644
      glyphs: std.AutoHashMapUnmanaged(GlyphKey, Glyph),
      cell_width: u31,
      cell_height: u31,
-@@ -237,6 +246,8 @@ pub const Face = struct {
+@@ -232,6 +241,8 @@ pub const Face = struct {
              .ft_face = ft_face,
              .hb_font = hb_font,
              .glyphs = .empty,
-+            .load_flags = loadFlags(ft_face),
++            .load_flags = @intCast(c.FT_LOAD_DEFAULT | c.FT_LOAD_COLOR),
 +            .synthetic_italic = false,
              .cell_width = metrics.cell_width,
              .cell_height = metrics.cell_height,
              .baseline = metrics.baseline,
-@@ -313,11 +324,10 @@ pub const Face = struct {
-         var delta: c.FT_Vector = undefined;
-         c.FT_Get_Transform(self.ft_face, &matrix, &delta);
-         var translation: c.FT_Vector = .{ .x = key.phase.x, .y = -@as(c.FT_Pos, key.phase.y) };
--        c.FT_Set_Transform(self.ft_face, null, &translation);
-+        c.FT_Set_Transform(self.ft_face, &matrix, &translation);
-         defer c.FT_Set_Transform(self.ft_face, &matrix, &delta);
--        if (c.FT_Load_Glyph(self.ft_face, index, loadFlags(self.ft_face)) != 0)
--            return error.FontLoadFailed;
--        if (c.FT_Render_Glyph(self.ft_face.*.glyph, c.FT_RENDER_MODE_NORMAL) != 0)
+@@ -270,11 +281,9 @@ pub const Face = struct {
+         if (gop.found_existing) return gop.value_ptr;
+         errdefer _ = self.glyphs.remove(key);
+ 
+-        const load_flags: c.FT_Int32 = @intCast(c.FT_LOAD_DEFAULT | c.FT_LOAD_COLOR);
 +        const load_flags = self.load_flags | @as(c.FT_Int32, @intCast(c.FT_LOAD_RENDER));
-+        if (c.FT_Load_Glyph(self.ft_face, index, load_flags) != 0)
+         if (c.FT_Load_Glyph(self.ft_face, index, load_flags) != 0)
              return error.FontLoadFailed;
+-        if (c.FT_Render_Glyph(self.ft_face.*.glyph, c.FT_RENDER_MODE_NORMAL) != 0)
+-            return error.FontLoadFailed;
  
          const slot = self.ft_face.*.glyph;
-@@ -380,10 +390,17 @@ pub const Face = struct {
+         const bitmap = slot.*.bitmap;
+@@ -336,10 +345,17 @@ pub const Face = struct {
          }
  
          if (!constrain_alpha) {
@@ -230,7 +201,7 @@ index 30afa17..995761d 100644
          }
  
          const available_width = @as(u31, constraint_width) * self.cell_width;
-@@ -623,17 +640,58 @@ fn selectNearestStrike(ft_face: c.FT_Face, size_px: u31) bool {
+@@ -570,17 +586,58 @@ fn selectNearestStrike(ft_face: c.FT_Face, size_px: u31) bool {
      return c.FT_Select_Size(ft_face, best) == 0;
  }
  
@@ -291,16 +262,16 @@ index 30afa17..995761d 100644
  fn copyMonoRows(dst: []u8, bitmap: c.FT_Bitmap, width: u31, height: u31) Error!void {
      const pitch: usize = @intCast(@abs(bitmap.pitch));
      for (0..height) |y| {
-@@ -765,7 +823,7 @@ fn fontSort(family: [:0]const u8, size_px: f64, style: FaceStyle, options: Optio
+@@ -712,7 +769,7 @@ fn fontSort(family: [:0]const u8, size_px: u31, style: FaceStyle, options: Optio
      _ = c.FcPatternAddString(pattern, c.FC_FAMILY, family.ptr);
-     _ = c.FcPatternAddDouble(pattern, c.FC_PIXEL_SIZE, size_px);
+     _ = c.FcPatternAddDouble(pattern, c.FC_PIXEL_SIZE, @floatFromInt(size_px));
      _ = c.FcPatternAddInteger(pattern, c.FC_SPACING, c.FC_MONO);
 -    if (style.weight(options.weight)) |weight| _ = c.FcPatternAddInteger(pattern, c.FC_WEIGHT, weight);
 +    if (style.weight(options.weight, options.synthetic_italic_weight)) |weight| _ = c.FcPatternAddInteger(pattern, c.FC_WEIGHT, weight);
      if (style.slant()) |slant| _ = c.FcPatternAddInteger(pattern, c.FC_SLANT, slant);
      if (c.FcConfigSubstitute(null, pattern, c.FcMatchPattern) != c.FcTrue)
          return error.FontLoadFailed;
-@@ -776,6 +834,26 @@ fn fontSort(family: [:0]const u8, size_px: f64, style: FaceStyle, options: Optio
+@@ -723,6 +780,26 @@ fn fontSort(family: [:0]const u8, size_px: u31, style: FaceStyle, options: Optio
          return error.FontNotFound;
      errdefer c.FcFontSetDestroy(sort_set);
      if (result != c.FcResultMatch or sort_set.*.nfont < 1) return error.FontNotFound;
@@ -327,7 +298,7 @@ index 30afa17..995761d 100644
      return sort_set;
  }
  
-@@ -802,7 +880,39 @@ fn loadPrimaryStyle(
+@@ -749,7 +826,39 @@ fn loadPrimaryStyle(
      return face_idx;
  }
  
@@ -368,7 +339,7 @@ index 30afa17..995761d 100644
      var a_file: [*c]c.FcChar8 = undefined;
      var b_file: [*c]c.FcChar8 = undefined;
      if (c.FcPatternGetString(a, c.FC_FILE, 0, &a_file) != c.FcResultMatch) return false;
-@@ -811,7 +921,39 @@ fn samePatternFace(a: ?*c.FcPattern, b: ?*c.FcPattern) bool {
+@@ -758,7 +867,39 @@ fn samePatternFace(a: ?*c.FcPattern, b: ?*c.FcPattern) bool {
      var b_index: c_int = 0;
      _ = c.FcPatternGetInteger(a, c.FC_INDEX, 0, &a_index);
      _ = c.FcPatternGetInteger(b, c.FC_INDEX, 0, &b_index);
@@ -409,16 +380,7 @@ index 30afa17..995761d 100644
  }
  
  /// Load the best match for `family` at `size_px` and optionally adjust its
-@@ -828,7 +970,7 @@ pub fn init(
- pub fn initOptions(
-     alloc: std.mem.Allocator,
-     family: [:0]const u8,
--    size_px: u31,
-+    size_px: f64,
-     adjust_cell_height: ?Config.MetricModifier,
-     options: Options,
- ) Error!Font {
-@@ -1467,7 +1609,25 @@ fn loadFromPattern(
+@@ -1411,7 +1552,25 @@ fn loadFromPattern(
          return error.FontNotFound;
      var index: c_int = 0;
      _ = c.FcPatternGetInteger(pattern, c.FC_INDEX, 0, &index);
@@ -446,7 +408,7 @@ index 30afa17..995761d 100644
  
  test "load monospace font and rasterize a glyph" {
 diff --git a/src/Renderer.zig b/src/Renderer.zig
-index 1826e2e..fd4251e 100644
+index 9d95cd0..7c093dd 100644
 --- a/src/Renderer.zig
 +++ b/src/Renderer.zig
 @@ -41,6 +41,7 @@ const blendCapsule = pixel_raster.blendCapsule;
@@ -482,7 +444,7 @@ index 1826e2e..fd4251e 100644
      self.row_overhang.deinit(self.alloc);
      self.rendered_rects.deinit(self.alloc);
      self.cell_damage_tracker.deinit();
-@@ -1709,6 +1714,154 @@ fn blitDecoration(
+@@ -1675,6 +1680,154 @@ fn blitDecoration(
      );
  }
  
@@ -637,7 +599,7 @@ index 1826e2e..fd4251e 100644
  /// Shape cells [start, end) as one HarfBuzz run and blit the glyphs.
  /// The run's face is the one resolved for its first cell.
  fn drawRun(
-@@ -1776,15 +1929,24 @@ fn drawRun(
+@@ -1742,15 +1895,24 @@ fn drawRun(
      if (!non_space) return;
  
      const shaped = try self.text_shaper.shape(face_index, face_style, end - start);
@@ -650,7 +612,7 @@ index 1826e2e..fd4251e 100644
 +    }
  
      const baseline_y: i32 = @as(i32, y) * font.cell_height + font.baseline;
-     var pen_x: i64 = 0; // 26.6 physical pixels, including the grid anchor.
+     var pen_x: i32 = 0;
      var cluster: u32 = std.math.maxInt(u32);
 +    var cluster_glyph_index: usize = 0;
      for (shaped) |sg| {
@@ -660,29 +622,29 @@ index 1826e2e..fd4251e 100644
          if (abs_cluster != cluster) {
              cluster = abs_cluster;
 +            cluster_glyph_index = 0;
-             pen_x = @as(i64, cluster) * font.cell_width * 64;
+             pen_x = @as(i32, @intCast(cluster)) * font.cell_width;
          }
          const cluster_x: usize = @intCast(cluster);
-@@ -1811,21 +1973,61 @@ fn drawRun(
+@@ -1774,21 +1936,61 @@ fn drawRun(
              },
              else => |e| return e,
          };
--        self.noteOverhang(@as(i32, font.baseline) + origin_y.pixel - g.bearing_y, g.height);
+-        self.noteOverhang(@as(i32, font.baseline) - sg.y_offset - g.bearing_y, g.height);
 -        blitGlyph(
 -            pixels,
 -            self.pixelStride(width),
 -            width,
 -            height,
 -            g,
--            origin_x.pixel + g.bearing_x,
--            baseline_y + origin_y.pixel - g.bearing_y,
+-            pen_x + sg.x_offset + g.bearing_x,
+-            baseline_y - sg.y_offset - g.bearing_y,
 -            argb(self.fg_scratch.items[cluster]),
 -            self.reverse_scratch.items[cluster],
 -            self.glyph_clip_x,
 -        );
-+        const glyph_y = @as(i32, font.baseline) + origin_y.pixel - g.bearing_y;
++        const glyph_y = @as(i32, font.baseline) - sg.y_offset - g.bearing_y;
 +        if (!synthetic_run) self.noteOverhang(glyph_y, g.height);
-+        const glyph_x = origin_x.pixel + g.bearing_x;
++        const glyph_x = pen_x + sg.x_offset + g.bearing_x;
 +        const group_left: u31 = @intCast(cluster * font.cell_width);
 +        const group_right: u31 = group_left + @as(u31, constraint_width) * font.cell_width;
 +        const draw_x = if (font.face(sg.face).synthetic_italic)
@@ -716,7 +678,7 @@ index 1826e2e..fd4251e 100644
 +                height,
 +                g,
 +                draw_x,
-+                baseline_y + origin_y.pixel - g.bearing_y,
++                baseline_y - sg.y_offset - g.bearing_y,
 +                argb(self.fg_scratch.items[cluster]),
 +                self.reverse_scratch.items[cluster],
 +                self.glyph_clip_x,
@@ -739,7 +701,7 @@ index 1826e2e..fd4251e 100644
  
  fn overlayCodepoints(self: *Renderer, text: []const u8) ![]const u21 {
 diff --git a/src/bench.zig b/src/bench.zig
-index 98c26ed..23a1383 100644
+index 360f390..fdb1962 100644
 --- a/src/bench.zig
 +++ b/src/bench.zig
 @@ -28,7 +28,11 @@ pub fn run(init: std.process.Init) !void {
@@ -756,18 +718,15 @@ index 98c26ed..23a1383 100644
      defer font.deinit(alloc);
      var renderer: Renderer = try .init(alloc, &font, .{});
 diff --git a/src/pixel_raster.zig b/src/pixel_raster.zig
-index 1a95c14..db43bfd 100644
+index 9bcd3d4..0ee7a65 100644
 --- a/src/pixel_raster.zig
 +++ b/src/pixel_raster.zig
-@@ -300,7 +300,7 @@ const CoverageCache = struct {
- };
- threadlocal var coverage_cache: [32]CoverageCache = @splat(.{});
- 
+@@ -213,7 +213,7 @@ fn blitAlphaGlyph(
+ /// coverage, four pixels per iteration. Produces the same value as
+ /// scalar `blend` for every pixel; zero-coverage pixels keep their
+ /// background (all-zero groups skip the store entirely).
 -fn blendAlphaSpan(noalias dst: []u32, noalias coverage: []const u8, color: u32) void {
 +pub fn blendAlphaSpan(noalias dst: []u32, noalias coverage: []const u8, color: u32) void {
-     std.debug.assert(dst.len == coverage.len and color >> 24 == 255);
-     if (dst.len == 0) return;
-     const fg = decodeRgb(color);
--- 
-2.54.0
-
+     std.debug.assert(dst.len == coverage.len);
+     // Foregrounds are opaque. Coverage becomes source alpha and is
+     // composited over the framebuffer's premultiplied destination.
