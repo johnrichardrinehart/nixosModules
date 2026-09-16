@@ -103,8 +103,14 @@ inputs: {
         };
         omp.context-mode = johnPkgs.context-mode;
         on-idle.idleTimeoutSeconds = 5 * 60;
-        repo-manager.system = final.stdenv.hostPlatform.system;
-        repod.system = final.stdenv.hostPlatform.system;
+        repo-manager = {
+          inherit (inputs) repo-manager;
+          system = final.stdenv.hostPlatform.system;
+        };
+        repod = {
+          inherit (inputs) repo-manager;
+          system = final.stdenv.hostPlatform.system;
+        };
         whisper-voice-type = {
           moonshineVoice = johnPkgs.moonshine-voice;
           model = johnPkgs.moonshine-models-onnx;

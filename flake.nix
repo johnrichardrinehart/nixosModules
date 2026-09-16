@@ -26,6 +26,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    repo-manager = {
+      url = "github:johnrichardrinehart/repo-manager/4660c4327b830d50681b70ba6ba8e027ac56769c";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
       flake = true;
