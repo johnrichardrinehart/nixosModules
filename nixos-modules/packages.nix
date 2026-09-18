@@ -33,6 +33,7 @@ in
         pkgs.tree
         pkgs.dev.johnrinehart.git-local-namespace
         pkgs.dev.johnrinehart.repo-manager
+        pkgs.dev.johnrinehart.git-patch-wormhole
       ];
     })
 
