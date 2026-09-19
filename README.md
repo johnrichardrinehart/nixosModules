@@ -36,29 +36,43 @@ and color temperature in kelvin.
 
 ## Git patch transfer
 
-The `git-patch-wormhole` package transfers a Git revision selection as
+The `git-patch-wormhole` package transfers one or more Git heads as
 format-patch files over Magic Wormhole. It is included when
 `dev.johnrinehart.packages.shell.enable` is enabled.
 
-Send the commits selected by any `git format-patch` revision arguments:
+Describe each head as `<base>:<branch>:<revision-range>`. The sender records the
+exact base commit, and the receiver creates each named branch at that base
+before applying its patches:
+
+```console
+$ git patch-wormhole send main:feature:main..feature release:hotfix:release..hotfix
+$ git patch-wormhole receive 7-example-code
+```
+
+The base commit must already exist in the receiving repository. Leave the
+branch field empty to apply a head in detached-HEAD state; the receiver prints
+the resulting commit so it can be retained later:
+
+```console
+$ git patch-wormhole send main::main..experiment
+```
+
+The original single-head form remains available. It passes all arguments to
+`git format-patch`:
 
 ```console
 $ git patch-wormhole send main..feature
 ```
 
-On the receiving machine, apply the patches to the current branch:
-
-```console
-$ git patch-wormhole receive 7-example-code
-```
-
-To create a branch at a specific base before applying:
+Legacy archives apply to the current branch by default. To create a branch at a
+specific base before applying one:
 
 ```console
 $ git patch-wormhole receive 7-example-code --branch feature --base main
 ```
 
-The receiving worktree must be clean. `--base` without `--branch` behaves like
-`git checkout <base>`: existing branches stay attached, while tags and commit
-references produce detached HEADs.
+The receiving worktree must be clean. For legacy archives, `--base` without
+`--branch` behaves like `git checkout <base>`: existing branches stay attached,
+while tags and commit references produce detached HEADs. Multi-head archives
+store their own bases and branch names, so they reject `--base` and `--branch`.
 
