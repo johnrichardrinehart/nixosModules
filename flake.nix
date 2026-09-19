@@ -56,7 +56,11 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [ inputs.flake-parts.flakeModules.partitions ];
 
-      systems = [ "x86_64-linux" ];
+      systems = [
+        "aarch64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
+      ];
 
       partitionedAttrs = {
         checks = "dev";
