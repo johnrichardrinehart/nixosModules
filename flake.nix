@@ -27,7 +27,7 @@
     };
 
     repo-manager = {
-      url = "github:johnrichardrinehart/repo-manager/4660c4327b830d50681b70ba6ba8e027ac56769c";
+      url = "github:johnrichardrinehart/repo-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
