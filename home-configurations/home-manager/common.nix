@@ -305,6 +305,21 @@ in
       ''
     );
 
+    # oh-my-posh's `init zsh` (evaluated in the zsh init below) does not inline
+    # the prompt setup; it sources a persistent cache script,
+    # ~/.cache/oh-my-posh/init.<hash>.zsh, whose <hash> is derived from the shell
+    # and config path, not the oh-my-posh version. That cache hard-codes the
+    # absolute /nix/store path of the binary that wrote it, so after an upgrade
+    # the unchanged hash means the stale cache is reused; a later
+    # `nix-collect-garbage` then deletes the store path it still points at and
+    # every shell — newly started ones included — fails with "no such file or
+    # directory: .../oh-my-posh". Activation runs on each switch, i.e. exactly
+    # when the binary path can change, so drop the cache here to force
+    # regeneration against the current binary; the next shell recreates it.
+    home.activation.clearOhMyPoshInitCache = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+      run rm -f "$HOME/.cache/oh-my-posh/"init.*.zsh
+    '';
+
     programs.tmux =
       lib.mkIf
         (
