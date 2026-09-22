@@ -24,10 +24,13 @@ import sys
 MANIFEST = os.environ.get("VM_SHARES_MANIFEST", "/run/vm-shares/manifest.json")
 # host:port override for testing against an ad-hoc bridge.
 ADDRESS = os.environ.get("VM_HOST_WATCHMAN")
-CONNECT_TIMEOUT = 2.0
+CONNECT_TIMEOUT = 1.0
 # How long watchman may take to settle pending events before answering. Past
 # this the query errors and git falls back to a full scan.
 SYNC_TIMEOUT_MS = 2000
+# Per-reply ceiling. A bridge that accepts and then says nothing - socat up,
+# watchman wedged - has to cost less than the scan git does instead.
+REPLY_TIMEOUT = 1.0 + SYNC_TIMEOUT_MS / 1000
 
 
 def fail(message):
@@ -75,18 +78,26 @@ def host_path(manifest, guest_dir):
 
 class Watchman:
     def __init__(self, address):
+        self.address = f"{address[0]}:{address[1]}"
         try:
             self.sock = socket.create_connection(address, timeout=CONNECT_TIMEOUT)
         except OSError as error:
-            fail(f"cannot reach watchman bridge at {address[0]}:{address[1]}: {error}")
-        self.sock.settimeout(CONNECT_TIMEOUT + SYNC_TIMEOUT_MS / 1000)
+            fail(f"cannot reach watchman bridge at {self.address}: {error}")
+        self.sock.settimeout(REPLY_TIMEOUT)
         self.reader = self.sock.makefile("rb")
 
     def call(self, request):
         # Watchman takes one JSON PDU per line on its socket and answers in the
         # encoding it was asked in; the CLI's BSER default is not required.
-        self.sock.sendall(json.dumps(request).encode() + b"\n")
-        line = self.reader.readline()
+        try:
+            self.sock.sendall(json.dumps(request).encode() + b"\n")
+            line = self.reader.readline()
+        except TimeoutError:
+            fail(
+                f"watchman bridge at {self.address} did not answer {request[0]} within {REPLY_TIMEOUT:g}s"
+            )
+        except OSError as error:
+            fail(f"watchman bridge at {self.address}: {error}")
         if not line:
             fail("watchman closed the connection")
         try:
@@ -136,9 +147,21 @@ def main(argv):
         "fields": ["name"],
         "dedup_results": True,
         "sync_timeout": SYNC_TIMEOUT_MS,
-        # A path created after the token and gone again before now never
-        # existed as far as this index is concerned.
-        "expression": ["not", ["allof", ["since", token, "cclock"], ["not", "exists"]]],
+        "expression": [
+            "allof",
+            # Files and symlinks only. Watchman also reports a directory
+            # whenever an entry is added or removed inside it, and git reads a
+            # reported path that is not an index entry as a directory event,
+            # invalidating every entry beneath it: one new file in src/ would
+            # cost a re-stat of all of src/. Git needs none of that from here.
+            # A moved or removed directory arrives as each of its former
+            # children, still typed as they were, and the untracked cache for
+            # a reported path's parent is dropped by git on its own.
+            ["anyof", ["type", "f"], ["type", "l"]],
+            # A path created after the token and gone again before now never
+            # existed as far as this index is concerned.
+            ["not", ["allof", ["since", token, "cclock"], ["not", "exists"]]],
+        ],
     }
     if relative_root:
         query["relative_root"] = relative_root
