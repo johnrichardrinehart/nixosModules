@@ -61,10 +61,10 @@ inputs: {
           frameworkTool = final.framework-tool;
         };
         fuzzel-dmenu = {
-          fuzzel = johnPkgs.fuzzel_1_14_1;
+          fuzzel = johnPkgs.fuzzel_1_15_0;
           inherit (final) niri;
         };
-        fuzzel_1_14_1.fuzzel = prev.fuzzel;
+        fuzzel_1_15_0.fuzzel = prev.fuzzel;
         kdlfmt.kdlfmt = kdlfmt_0_1_7;
         kill-idle-group.onIdlePackage = johnPkgs.on-idle;
         libmoonshine = {
@@ -89,7 +89,7 @@ inputs: {
           onnxruntime = johnPkgs.onnxruntime-openvino;
         };
         niri-cycle-display-mode = {
-          fuzzel = johnPkgs.fuzzel_1_14_1;
+          fuzzel = johnPkgs.fuzzel_1_15_0;
           inherit (final) niri;
         };
         niri-gather-windows.niri = final.niri;

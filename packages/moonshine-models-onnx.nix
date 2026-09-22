@@ -26,23 +26,29 @@ let
 
     os.makedirs(out_dir, exist_ok=True)
 
-    models = ["frontend", "encoder", "adapter", "cross_kv", "decoder_kv",
-              "decoder_kv_with_attention"]
+    models = [
+        ("frontend.model", "frontend"),
+        ("encoder", "encoder"),
+        ("adapter", "adapter"),
+        ("cross_kv", "cross_kv"),
+        ("decoder_kv", "decoder_kv"),
+        ("decoder_kv_with_attention", "decoder_kv_with_attention"),
+    ]
 
-    for name in models:
-        ort_path = os.path.join(model_dir, f"{name}.ort")
-        onnx_path = os.path.join(out_dir, f"{name}.onnx")
+    for source_name, output_name in models:
+        ort_path = os.path.join(model_dir, f"{source_name}.ort")
+        onnx_path = os.path.join(out_dir, f"{output_name}.onnx")
 
         if not os.path.exists(ort_path):
             continue
 
-        print(f"Converting {name}.ort -> {name}.onnx ...")
+        print(f"Converting {source_name}.ort -> {output_name}.onnx ...")
         so = ort.SessionOptions()
         so.optimized_model_filepath = onnx_path
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
         ort.InferenceSession(ort_path, so)
         size_mb = os.path.getsize(onnx_path) / 1024 / 1024
-        print(f"  {name}.onnx: {size_mb:.1f} MB")
+        print(f"  {output_name}.onnx: {size_mb:.1f} MB")
 
     # Copy non-model files
     for f in os.listdir(model_dir):
@@ -56,7 +62,7 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "moonshine-models-onnx";
-  version = "0.0.62";
+  version = "0.1.5";
 
   dontUnpack = true;
 

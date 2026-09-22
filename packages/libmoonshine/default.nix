@@ -31,6 +31,7 @@
   },
 }:
 let
+  version = "0.1.5";
   providerNames = [
     "cpu"
     "openvino"
@@ -52,11 +53,11 @@ let
   audioProvider = normalizeProvider defaultOpenVINO (executionProviders.audio or { });
   decoderProvider = normalizeProvider defaultOpenVINO (executionProviders.decoder or { });
   pldaData = fetchurl {
-    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v0.1.1/core/cpp-annote/src/community1_cpp_annote_embedded.cpp";
+    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v${version}/core/cpp-annote/src/community1_cpp_annote_embedded.cpp";
     hash = "sha256-lCTaQXazPmfkAA6ip3bWS2p47pu/ctQEBftoBdEnWMQ=";
   };
   zipVoiceData = fetchurl {
-    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v0.1.1/core/moonshine-tts/src/zipvoice-voices-data.cpp";
+    url = "https://media.githubusercontent.com/media/moonshine-ai/moonshine/v${version}/core/moonshine-tts/src/zipvoice-voices-data.cpp";
     hash = "sha256-8+TWLK6TxGXh3oUhvFcGuaIPg0y783QEvwPw013/oBI=";
   };
   usesOpenVINO = audioProvider.provider == "openvino" || decoderProvider.provider == "openvino";
@@ -78,14 +79,14 @@ assert lib.assertMsg (builtins.elem decoderProvider.provider providerNames)
   "libmoonshine executionProviders.decoder.provider must be one of: ${lib.concatStringsSep ", " providerNames}";
 stdenv.mkDerivation {
   pname = "libmoonshine";
-  version = "0.1.1";
+  inherit version;
 
   src = fetchFromGitHub {
     owner = "moonshine-ai";
     repo = "moonshine";
-    tag = "v0.1.1";
+    tag = "v${version}";
     sparseCheckout = [ "core" ];
-    hash = "sha256-EWB/OPcT/yvFCidqnMWaVXTbH0r6kReYgs9+nwFD2ss=";
+    hash = "sha256-Zl1wOevuOGcvL6in1WOClF2kSPMVXyLaIwzjUjjDO1Y=";
   };
 
   patches = [ ./runtime-diarization-models.patch ];

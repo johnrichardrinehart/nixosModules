@@ -36,20 +36,34 @@ def find_producer(model, tensor_name):
     return None
 
 
-def dequant_array(quantized, scale, zp, axis=0):
+def dequant_array(quantized, scale, zp, axis=None):
     if scale.ndim == 0:
         return (quantized.astype(np.float32) - zp.astype(np.float32)) * scale.astype(
             np.float32
         )
-    result = np.zeros_like(quantized, dtype=np.float32)
-    slices_pre = [slice(None)] * axis
-    for i in range(scale.shape[0]):
-        idx = tuple(slices_pre + [i])
-        zp_val = zp[i] if zp.ndim > 0 else zp
-        result[idx] = (quantized[idx].astype(np.float32) - float(zp_val)) * float(
-            scale[i]
-        )
-    return result
+
+    if axis is None:
+        matching_axes = [
+            index
+            for index, size in enumerate(quantized.shape)
+            if size == scale.shape[0]
+        ]
+        if not matching_axes:
+            raise ValueError(
+                f"scale length {scale.shape[0]} does not match quantized shape "
+                f"{quantized.shape}"
+            )
+        axis = matching_axes[-1]
+
+    broadcast_shape = [1] * quantized.ndim
+    broadcast_shape[axis] = scale.shape[0]
+    scale_values = scale.astype(np.float32).reshape(broadcast_shape)
+    zp_values = (
+        zp.astype(np.float32).reshape(broadcast_shape)
+        if zp.ndim > 0
+        else zp.astype(np.float32)
+    )
+    return (quantized.astype(np.float32) - zp_values) * scale_values
 
 
 def find_quantized_source_init(model, tensor_name, visited=None):

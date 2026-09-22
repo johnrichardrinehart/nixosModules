@@ -324,7 +324,7 @@ in
         pkgs.brightnessctl
         cliphist-picker
         pkgs.cliphist
-        pkgs.dev.johnrinehart.fuzzel_1_14_1
+        pkgs.dev.johnrinehart.fuzzel_1_15_0
         pkgs.grim
         pkgs.awww
         pkgs.satty
@@ -342,7 +342,7 @@ in
     environment.etc."niri/config.kdl".source =
       let
         fuzzelDmenu = pkgs.dev.johnrinehart.fuzzel-dmenu.override {
-          fuzzel = pkgs.dev.johnrinehart.fuzzel_1_14_1;
+          fuzzel = pkgs.dev.johnrinehart.fuzzel_1_15_0;
           niri = config.programs.niri.package;
         };
         niriBase = pkgs.replaceVarsWith {

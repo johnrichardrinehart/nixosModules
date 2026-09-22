@@ -11,11 +11,11 @@
 }:
 let
   pname = "moonshine-voice";
-  version = "0.1.1";
+  version = "0.1.5";
 
   wheel = fetchurl {
-    url = "https://files.pythonhosted.org/packages/da/64/2d2a640457c383c064c5ad24294525404481390570c9559e8f8f21a59379/moonshine_voice-${version}-py3-none-manylinux_2_34_x86_64.whl";
-    hash = "sha256-1qvlCc6K3nmxi6H4jGToysxz93YcMI+zq61tHpaK1mk=";
+    url = "https://files.pythonhosted.org/packages/a9/9d/228f738b48e0e7cc1de97c3f842b5470c6a3c5f7a0bffbf13c3d00eefb87/moonshine_voice-${version}-py3-none-manylinux_2_34_x86_64.whl";
+    hash = "sha256-HtngzPlL5IRdaef6hi3PTItYAadYeWlmSUxpT0gYRJY=";
   };
 in
 python3.pkgs.buildPythonPackage {
