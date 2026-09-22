@@ -87,35 +87,48 @@ let
 
   # `hasconfig` matches with pathname semantics: `*` stops at `/`, `**/` spans
   # whole components, and a trailing `/**` matches everything inside. A remote
-  # for the prefix `authority/path` therefore appears as one of
-  #   https://authority/path/…   ssh://user@authority/path/…   git@authority:path/…
-  # and, when the prefix names a repository outright, ends at `path` or
-  # `path.git` with nothing to follow. The match is case-sensitive and applies
-  # to the configured URL, before any url.<base>.insteadOf rewriting.
+  # appears in one of three shapes, and the user part makes them distinct:
+  #   https://authority/path        ssh://user@authority/path        user@authority:path
+  # so each prefix needs one pattern per shape. An authority or an owner is
+  # always followed by more path. A prefix three segments deep may name a
+  # repository, which ends the URL bare or with `.git`, or a nested group on a
+  # forge that has them, so from that depth the terminal forms are added to
+  # the descending one. The match is case-sensitive and applies to the
+  # configured URL, before any url.<base>.insteadOf rewriting.
   conditionsFor =
     prefix:
     let
       parts = lib.splitString "/" prefix;
       authority = lib.head parts;
       path = lib.concatStringsSep "/" (lib.tail parts);
-      urlHeads = [
+      # Locators are <authority>/<owner>/<repo>, but forges with nested groups
+      # go deeper, so three segments may be a repository or a group.
+      mayNameRepository = lib.length parts >= 3;
+      tails =
+        (if path == "" then [ "/**" ] else [ "/${path}/**" ])
+        ++ lib.optionals mayNameRepository [
+          "/${path}"
+          "/${path}.git"
+        ];
+      heads = [
         "**/${authority}"
         "**/*@${authority}"
+        "*@${authority}:"
       ];
-      scpHead = "*@${authority}:";
-      tails =
-        if path == "" then
-          [ "/**" ]
+      # The scp form has no slash between authority and path, and a bare `**`
+      # after the colon does not span components the way `/**` does, so the
+      # authority-wide tail needs one explicit path component first.
+      join =
+        head: tail:
+        if !lib.hasSuffix ":" head then
+          head + tail
+        else if tail == "/**" then
+          head + "*/**"
         else
-          [
-            "/${path}/**"
-            "/${path}"
-            "/${path}.git"
-          ];
-      scpTails = if path == "" then [ "*/**" ] else map (lib.removePrefix "/") tails;
+          head + lib.removePrefix "/" tail;
     in
     map (pattern: "hasconfig:remote.*.url:${pattern}") (
-      lib.concatMap (head: map (tail: head + tail) tails) urlHeads ++ map (tail: scpHead + tail) scpTails
+      lib.concatMap (head: map (join head) tails) heads
     );
 
   # Git applies includes in order and later values win, so a repository prefix

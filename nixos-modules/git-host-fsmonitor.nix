@@ -46,6 +46,9 @@ in
         # cache lets git skip reading it too; without this the readdirs
         # remain, and on a share each of those is a host lstat per entry.
         untrackedCache = true;
+        # Git otherwise retries a failed hook with protocol version 1, which
+        # the hook then rejects too: two complaints per status for one cause.
+        fsmonitorHookVersion = 2;
       };
     }) cfg.roots;
   };
