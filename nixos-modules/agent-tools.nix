@@ -6,7 +6,6 @@
 }:
 let
   cfg = config.dev.johnrinehart.agentTools;
-  ompPackage = pkgs.dev.johnrinehart.omp.withPlugins (plugins: [ plugins.context-mode ]);
   mkMergedCodexConfig =
     {
       name,
@@ -90,7 +89,19 @@ in
       createWheelUser = lib.mkEnableOption "a dedicated pi user with wheel access";
     };
 
-    omp.enable = lib.mkEnableOption "OMP coding agent";
+    omp = {
+      enable = lib.mkEnableOption "OMP coding agent";
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.dev.johnrinehart.omp.withPlugins (plugins: [ plugins.context-mode ]);
+        defaultText = lib.literalExpression "pkgs.dev.johnrinehart.omp.withPlugins (plugins: [ plugins.context-mode ])";
+        description = ''
+          OMP package installed system-wide. Home Manager points agent-deck's
+          built-in `omp` tool at this package so both launch the same binary.
+        '';
+      };
+    };
 
     primeAgent = {
       enable = lib.mkEnableOption "Prime Agent";
@@ -156,7 +167,7 @@ in
     })
     (lib.mkIf cfg.omp.enable {
       dev.johnrinehart.nix.allowedUnfreePackages = lib.mkAfter [ "context-mode" ];
-      environment.systemPackages = [ ompPackage ];
+      environment.systemPackages = [ cfg.omp.package ];
     })
     (lib.mkIf (cfg.pi.enable && cfg.pi.createWheelUser) {
       users.users.pi = {

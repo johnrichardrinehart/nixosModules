@@ -64,6 +64,15 @@ let
     command = "${lib.getExe' pkgs.dev.johnrinehart.omx-agent-tools "omx-high-sandboxed-ralph"}"
     compatible_with = "codex"
 
+    # agent-deck ships `omp` as a built-in tool and rejects any [tools.omp]
+    # entry that shadows it. Its session handling (--continue, --session-dir,
+    # fork, per-session --model) is keyed on the literal tool name "omp", so a
+    # custom [tools.my-omp] wrapper with compatible_with = "omp" would only
+    # inherit busy/prompt patterns. Override the built-in's command instead so
+    # agent-deck launches the same Nix-provided omp as the shell does.
+    [omp]
+    command = "${lib.getExe osConfig.dev.johnrinehart.agentTools.omp.package}"
+
     [worktree]
     default_location = "sibling"
     auto_cleanup = true

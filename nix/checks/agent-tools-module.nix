@@ -79,6 +79,10 @@ assert
 assert
   profile.home-manager.users.john.programs.kitty.keybindings."ctrl+shift+backspace"
   == "send_text all \\x1b[127;6u";
+assert lib.hasInfix (builtins.unsafeDiscardStringContext ''
+  [omp]
+  command = "${lib.getExe (findOmpPackage profile)}"
+'') profile.home-manager.users.john.home.file.".agent-deck/config.toml".text;
 assert !(profile.users.users ? pi);
 assert !(builtins.hasAttr "prime-agent" profile.users.users);
 assert !(profile.users.users ? codex);
