@@ -75,6 +75,32 @@ let
     [instances]
     allow_multiple = true
   '';
+  # The git segment's ignore_status is the one per-host knob in the prompt
+  # configuration. Hosts that leave it empty get the checked-in file unchanged,
+  # so their store path does not move.
+  ohMyPoshIgnoreStatus = osConfig.dev.johnrinehart.programs.oh-my-posh.git.ignoreStatus;
+  ohMyPoshConfig =
+    if ohMyPoshIgnoreStatus == [ ] then
+      ./oh-my-posh.json
+    else
+      let
+        base = builtins.fromJSON (builtins.readFile ./oh-my-posh.json);
+        patchSegment =
+          segment:
+          if segment.type == "git" then
+            segment
+            // {
+              options = (segment.options or { }) // {
+                ignore_status = ohMyPoshIgnoreStatus;
+              };
+            }
+          else
+            segment;
+        patchBlock = block: block // { segments = map patchSegment block.segments; };
+      in
+      pkgs.writeText "oh-my-posh.json" (
+        builtins.toJSON (base // { blocks = map patchBlock base.blocks; })
+      );
 in
 {
   imports = [
@@ -660,7 +686,7 @@ in
           # https://blog.vghaisas.com/zsh-beep-sound/
               unsetopt BEEP
 
-              eval $("${lib.getExe pkgs.oh-my-posh}" init zsh --config "${./oh-my-posh.json}");
+              eval $("${lib.getExe pkgs.oh-my-posh}" init zsh --config "${ohMyPoshConfig}");
               _omp_get_prompt() {
                 local type=$1 ref branch
                 local args=("''${@[2,-1]}")
@@ -671,7 +697,7 @@ in
                     *) branch="$ref" ;;
                   esac
                 fi
-                OMP_GIT_BRANCH="$branch" POSH_SESSION_ID= $_omp_executable print $type --config "${./oh-my-posh.json}" --shell=zsh --shell-version=$ZSH_VERSION --status=$_omp_status --no-status=$_omp_no_status --execution-time=$_omp_execution_time --job-count=$_omp_job_count --stack-count=$_omp_stack_count --terminal-width="''${COLUMNS-0}" ''${args[@]}
+                OMP_GIT_BRANCH="$branch" POSH_SESSION_ID= $_omp_executable print $type --config "${ohMyPoshConfig}" --shell=zsh --shell-version=$ZSH_VERSION --status=$_omp_status --no-status=$_omp_no_status --execution-time=$_omp_execution_time --job-count=$_omp_job_count --stack-count=$_omp_stack_count --terminal-width="''${COLUMNS-0}" ''${args[@]}
               }
         '';
     };

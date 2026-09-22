@@ -81,6 +81,7 @@
     ./monstar.nix
     ./nix.nix
     ./obsidian.nix
+    ./oh-my-posh.nix
     ./packages.nix
     ./repo-manager.nix
     ./s3_mount.nix
