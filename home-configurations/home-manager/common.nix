@@ -427,6 +427,12 @@ in
         };
         core.excludesFile = "~/.gitignore";
         pull.rebase = true;
+        # repo-manager sets this per repository as it touches them, and passes
+        # it on every git call it makes; this covers `git worktree add` by hand
+        # in clones it has not touched since. The managed tree is seen from
+        # more than one absolute path - /Users/... on the Mac, /home/... in
+        # its guest - and only a relative link resolves from both.
+        worktree.useRelativePaths = true;
       };
     };
 
