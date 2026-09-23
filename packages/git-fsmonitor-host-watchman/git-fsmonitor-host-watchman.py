@@ -9,6 +9,14 @@ the host filesystem as ordinary syscalls made by QEMU's 9p server - so the
 hook asks that watchman, over a TCP bridge the launcher exposes on the slirp
 gateway, after translating the worktree path through the shares manifest.
 
+The same hook runs on the host itself, where there is no manifest: it then
+asks the local watchman over its unix socket about the worktree as it is. The
+two sides must share a worktree's index, and the token git stores in it is a
+watchman clock; with both sides watching the same root of the same watchman,
+whichever side wrote the index last leaves a token the other can resume
+from. Any other fsmonitor on either side (git's builtin daemon, or none)
+leaves a token the other side has to answer with "everything changed".
+
 Protocol (git fsmonitor hook version 2): argv is `2 <token>`; stdout is the
 new token, then each changed path relative to the worktree root, each
 NUL-terminated; a single path of `/` means "everything may have changed".
@@ -19,12 +27,19 @@ be slow or absent, never wrong.
 import json
 import os
 import socket
+import subprocess
 import sys
 
 MANIFEST = os.environ.get("VM_SHARES_MANIFEST", "/run/vm-shares/manifest.json")
 # host:port override for testing against an ad-hoc bridge.
 ADDRESS = os.environ.get("VM_HOST_WATCHMAN")
+# The watchman whose per-user service the launcher bridges to the guest. On
+# the host the hook has to ask that same instance, or its clocks mean nothing
+# to the guest; the package pins the launcher's build here.
+WATCHMAN = os.environ.get("GIT_FSMONITOR_WATCHMAN", "@watchman@")
 CONNECT_TIMEOUT = 1.0
+# get-sockname may have to start the watchman service first.
+GET_SOCKNAME_TIMEOUT = 5.0
 # How long watchman may take to settle pending events before answering. Past
 # this the query errors and git falls back to a full scan.
 SYNC_TIMEOUT_MS = 2000
@@ -76,13 +91,47 @@ def host_path(manifest, guest_dir):
     return host_root + guest_dir[len(guest_root) :]
 
 
+def local_socket():
+    """The unix socket of the watchman service running on this machine."""
+    sock = os.environ.get("WATCHMAN_SOCK")
+    if sock:
+        return sock
+    # get-sockname starts the per-user service when it is not running, in the
+    # place that service's other clients - the launcher's bridge - expect it.
+    try:
+        result = subprocess.run(
+            [WATCHMAN, "--output-encoding=json", "--no-pretty", "get-sockname"],
+            capture_output=True,
+            check=True,
+            timeout=GET_SOCKNAME_TIMEOUT,
+        )
+        sock = json.loads(result.stdout).get("sockname")
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        fail(f"cannot locate the local watchman through {WATCHMAN}: {error}")
+    if not sock:
+        fail(f"{WATCHMAN} get-sockname named no socket")
+    return sock
+
+
 class Watchman:
     def __init__(self, address):
-        self.address = f"{address[0]}:{address[1]}"
+        # A (host, port) pair is the launcher's bridge; a string is the local
+        # service's unix socket. Both speak the same JSON-per-line protocol.
+        if isinstance(address, str):
+            self.address = address
+            family, target = socket.AF_UNIX, address
+        else:
+            self.address = f"{address[0]}:{address[1]}"
+            family, target = None, address
         try:
-            self.sock = socket.create_connection(address, timeout=CONNECT_TIMEOUT)
+            if family is None:
+                self.sock = socket.create_connection(target, timeout=CONNECT_TIMEOUT)
+            else:
+                self.sock = socket.socket(family, socket.SOCK_STREAM)
+                self.sock.settimeout(CONNECT_TIMEOUT)
+                self.sock.connect(target)
         except OSError as error:
-            fail(f"cannot reach watchman bridge at {self.address}: {error}")
+            fail(f"cannot reach watchman at {self.address}: {error}")
         self.sock.settimeout(REPLY_TIMEOUT)
         self.reader = self.sock.makefile("rb")
 
@@ -94,10 +143,10 @@ class Watchman:
             line = self.reader.readline()
         except TimeoutError:
             fail(
-                f"watchman bridge at {self.address} did not answer {request[0]} within {REPLY_TIMEOUT:g}s"
+                f"watchman at {self.address} did not answer {request[0]} within {REPLY_TIMEOUT:g}s"
             )
         except OSError as error:
-            fail(f"watchman bridge at {self.address}: {error}")
+            fail(f"watchman at {self.address}: {error}")
         if not line:
             fail("watchman closed the connection")
         try:
@@ -122,11 +171,18 @@ def main(argv):
         fail("expected fsmonitor hook protocol version 2")
     token = argv[2]
 
-    manifest = load_manifest()
     # Git runs the hook from the worktree root.
-    worktree = host_path(manifest, os.getcwd().rstrip("/"))
-
-    watchman = Watchman(bridge_address(manifest))
+    cwd = os.getcwd().rstrip("/")
+    if os.path.exists(MANIFEST):
+        # In the guest: the worktree is a share, and watchman is the host's,
+        # reached through the launcher's bridge.
+        manifest = load_manifest()
+        worktree = host_path(manifest, cwd)
+        watchman = Watchman(bridge_address(manifest))
+    else:
+        # On the host: the worktree is where git says it is.
+        worktree = cwd
+        watchman = Watchman(local_socket())
     # watch-project reuses an enclosing watch when one exists and otherwise
     # creates one at the nearest project root, which for a worktree is the
     # directory holding its .git file: one small watch per worktree, crawled
