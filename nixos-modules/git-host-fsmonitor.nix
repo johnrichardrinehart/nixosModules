@@ -69,6 +69,15 @@ in
           # Git otherwise retries a failed hook with protocol version 1, which
           # the hook then rejects too: two complaints per status for one cause.
           fsmonitorHookVersion = 2;
+          # The host's git and this guest's share each worktree's index, and
+          # see different uids, gids and inode numbers for the same files: the
+          # 9p server's multidevs=remap renumbers every inode, and an account
+          # renumbered since an index was written carries its old uid in it.
+          # Under the default checkStat any of those mismatches makes git
+          # re-read and re-hash the file, on every status that cannot write the
+          # index back and on the first one after the other side wrote it.
+          # minimal leaves whole-second mtime, size (and ctime) to decide.
+          checkStat = "minimal";
         };
       }) cfg.roots;
 
