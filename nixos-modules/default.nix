@@ -71,7 +71,6 @@
     ./filepicker.nix
     ./firmware/framework-ec.nix
     ./fonts.nix
-    ./git-host-fsmonitor.nix
     ./git-meld.nix
     ./kitkat-rs.nix
     ./gocryptfs.nix
