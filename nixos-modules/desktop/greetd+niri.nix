@@ -96,9 +96,9 @@ let
   '';
 
   # Keep the shell as a tiny supervisor so the watcher cannot outlive the
-  # daemon. Polling the daemon's own state avoids connector-name assumptions
-  # and covers hotplug, MST renumbering, and resume without relying on niri's
-  # event-stream format.
+  # daemon, and exit with it so the user unit below restarts both. Polling the
+  # daemon's own state avoids connector-name assumptions and covers hotplug,
+  # MST renumbering, and resume without relying on niri's event-stream format.
   awww-wallpaper = pkgs.writeShellScript "awww-wallpaper" ''
     set -u
     awww="${lib.getExe' pkgs.awww "awww"}"
@@ -299,6 +299,22 @@ in
       };
     };
 
+    # A spawn-at-startup child is never restarted, so one daemon exit left the
+    # session without a wallpaper until the next login.
+    systemd.user.services.awww-wallpaper = {
+      description = "Wallpaper (awww)";
+      wantedBy = [ "niri.service" ];
+      bindsTo = [ "niri.service" ];
+      # awww-daemon restores its cached image through `sh -c "exec awww img …"`.
+      path = [ pkgs.awww ];
+      after = [ "niri.service" ];
+      serviceConfig = {
+        ExecStart = awww-wallpaper;
+        Restart = "always";
+        RestartSec = "1s";
+      };
+    };
+
     environment.systemPackages =
       let
         myMako = pkgs.dev.johnrinehart.mako-with-etc-config;
@@ -353,7 +369,6 @@ in
             fuzzel_dmenu = lib.getExe fuzzelDmenu;
             clipboard_watch = lib.getExe clipboard-watch;
             cliphist_picker = lib.getExe cliphist-picker;
-            swww_wallpaper = "${awww-wallpaper}";
             input_toggle_notify = lib.getExe input-toggle-notify;
             keyboard_brightness_notify = lib.getExe keyboard-brightness-notify;
             lock_command = "${lib.getExe' pkgs.systemd "loginctl"} lock-session";
