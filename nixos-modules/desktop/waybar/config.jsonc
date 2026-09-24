@@ -196,6 +196,7 @@
   },
   "custom/display-mode": {
     "exec": "@niri_cycle_display_mode@ status",
+    "on-click": "@niri_cycle_display_mode@ pick",
     "return-type": "json",
     "interval": 2,
     "format": "{text}",
