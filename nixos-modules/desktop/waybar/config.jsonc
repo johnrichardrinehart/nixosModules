@@ -195,7 +195,7 @@
     "on-click": "sh /etc/xdg/waybar/power-menu.sh",
   },
   "custom/display-mode": {
-    "exec": "niri-cycle-display-mode status",
+    "exec": "@niri_cycle_display_mode@ status",
     "return-type": "json",
     "interval": 2,
     "format": "{text}",

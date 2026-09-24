@@ -399,6 +399,11 @@ in
             "--replace-fail"
             defaultInterfaceLine
             configuredInterfaceLine
+            # Waybar's user unit runs with a minimal PATH, so bare names from
+            # the system profile do not resolve.
+            "--subst-var-by"
+            "niri_cycle_display_mode"
+            (lib.getExe niri-cycle-display-mode)
           ];
         };
       in
