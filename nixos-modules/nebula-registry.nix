@@ -245,6 +245,23 @@ in
               serviceConfig.ExecStart = lib.mkForce "${
                 lib.getExe' config.services.nebula.networks.${name}.package "nebula"
               } -config /etc/nebula/${name}.d";
+              # Hosts accept inbound traffic only from the peer group, so a
+              # lighthouse certificate carrying that group could open
+              # connections to every host. The certificate is installed out of
+              # band, so check it on every start.
+              serviceConfig.ExecStartPre = [
+                (pkgs.writeShellScript "nebula-${name}-lighthouse-not-peer" ''
+                  set -euo pipefail
+                  cert=${lib.escapeShellArg config.services.nebula.networks.${name}.cert}
+                  groups=$(${
+                    lib.getExe' config.services.nebula.networks.${name}.package "nebula-cert"
+                  } print -json -path "$cert" | ${lib.getExe pkgs.jq} -r '(if type == "array" then .[0] else . end).details.groups // [] | .[]')
+                  if printf '%s\n' "$groups" | grep -qxF ${lib.escapeShellArg cfg.peerGroup}; then
+                    echo "refusing to start: lighthouse certificate $cert is in group '${cfg.peerGroup}'; re-sign it without that group" >&2
+                    exit 1
+                  fi
+                '')
+              ];
             };
           }) names
         );
