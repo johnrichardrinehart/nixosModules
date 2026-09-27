@@ -45,7 +45,8 @@ in
         "8.8.8.8"
         "6.6.6.6"
       ];
-      networking.resolvconf.enable = true;
+      # systemd-resolved replaces resolvconf when a host enables it.
+      networking.resolvconf.enable = lib.mkDefault true;
       networking.wireless.enable = lib.mkDefault false;
     })
 
@@ -80,7 +81,7 @@ in
         enable = true;
         settings = {
           General.EnableNetworkConfiguration = true;
-          Network.NameResolvingService = "resolvconf";
+          Network.NameResolvingService = if config.services.resolved.enable then "systemd" else "resolvconf";
           Settings.AutoConnect = true;
           DriverQuirks.DefaultInterface = "?*";
         };
