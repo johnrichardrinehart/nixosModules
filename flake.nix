@@ -110,6 +110,10 @@
                     inherit inputs pkgs;
                     inherit (inputs.nixpkgs) lib;
                   };
+                  brightness-sync = import ./nix/checks/brightness-sync.nix {
+                    inherit pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                   daylight-display-module = import ./nix/checks/daylight-display-module.nix {
                     inherit inputs pkgs;
                     inherit (inputs.nixpkgs) lib;

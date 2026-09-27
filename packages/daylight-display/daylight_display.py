@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -212,6 +213,25 @@ def locate(geoclue: str, config: dict[str, Any]) -> Location:
             ) from cache_error
 
 
+def software_brightness_path() -> Path | None:
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        return None
+    return Path(runtime_dir) / "brightness-notify" / "software-brightness"
+
+
+def read_software_brightness() -> float:
+    """Return the software dimming factor published by brightness-notify."""
+    path = software_brightness_path()
+    if path is None:
+        return 1.0
+    try:
+        value = float(path.read_text())
+    except (OSError, ValueError):
+        return 1.0
+    return min(max(value, 0.0), 1.0)
+
+
 def set_property(busctl: str, name: str, signature: str, value: str) -> None:
     subprocess.run(
         [
@@ -230,9 +250,11 @@ def set_property(busctl: str, name: str, signature: str, value: str) -> None:
     )
 
 
-def apply(busctl: str, setting: Setting) -> None:
-    set_property(busctl, "Brightness", "d", str(setting.brightness / 100))
-    set_property(busctl, "Temperature", "q", str(setting.temperature))
+def apply(busctl: str, setting: Setting | None) -> None:
+    base = 1.0 if setting is None else setting.brightness / 100
+    set_property(busctl, "Brightness", "d", str(base * read_software_brightness()))
+    if setting is not None:
+        set_property(busctl, "Temperature", "q", str(setting.temperature))
 
 
 def status(config: dict[str, Any], geoclue: str, now: dt.datetime) -> None:
@@ -249,10 +271,13 @@ def status(config: dict[str, Any], geoclue: str, now: dt.datetime) -> None:
 
 
 def run(config: dict[str, Any], busctl: str, geoclue: str, interval: int) -> None:
+    # brightness-notify sends SIGUSR1 to reapply its software factor immediately.
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
     location: Location | None = None
     next_location_update = 0.0
     refresh_seconds = config["location"]["refreshMinutes"] * 60
     while True:
+        wait = interval
         now_monotonic = time.monotonic()
         if location is None or now_monotonic >= next_location_update:
             try:
@@ -266,9 +291,10 @@ def run(config: dict[str, Any], busctl: str, geoclue: str, interval: int) -> Non
                 json.JSONDecodeError,
             ) as error:
                 print(f"daylight-display: no usable location: {error}", file=sys.stderr)
-                time.sleep(min(interval, 60))
-                continue
-        setting, _ = current_and_next(config, location, dt.datetime.now(dt.UTC))
+                wait = min(interval, 60)
+        setting = None
+        if location is not None:
+            setting, _ = current_and_next(config, location, dt.datetime.now(dt.UTC))
         try:
             apply(busctl, setting)
         except subprocess.CalledProcessError as error:
@@ -276,7 +302,7 @@ def run(config: dict[str, Any], busctl: str, geoclue: str, interval: int) -> Non
                 f"daylight-display: could not update wl-gammarelay: {error}",
                 file=sys.stderr,
             )
-        time.sleep(interval)
+        signal.sigtimedwait({signal.SIGUSR1}, wait)
 
 
 def main() -> None:

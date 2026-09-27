@@ -36,6 +36,7 @@ in
 
       desktop = {
         enable = lib.mkDefault true;
+        displayBrightness.enable = lib.mkDefault true;
         variant = lib.mkDefault "greetd+niri";
         greetd_niri.waybar.systemd.enable = lib.mkDefault true;
         obsidian.enable = lib.mkDefault true;

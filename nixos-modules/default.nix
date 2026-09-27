@@ -66,6 +66,7 @@
     ./hibernate-resume-optimization.nix
     ./droidcam.nix
     ./daylight-display.nix
+    ./display-brightness.nix
     ./external-display-recovery.nix
     ./external-display-telemetry.nix
     ./filepicker.nix

@@ -27,6 +27,7 @@ inputs: {
         cargoHash = "sha256-B/ir+Sf4uxQ9Fqmy6yEa3DMt0qdpfPrwD8lhUMOEUbo=";
       });
       packageArgs = {
+        brightness-sync.brightness-notify = johnPkgs.brightness-notify;
         clipboard-watch.clipboard-store-notify = johnPkgs.clipboard-store-notify;
         codex-config-merged = {
           name = "codex-config-merged.toml";

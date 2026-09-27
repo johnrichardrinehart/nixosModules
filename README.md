@@ -34,6 +34,30 @@ in
 The arguments are the solar event, offset in minutes, brightness percentage,
 and color temperature in kelvin.
 
+## Brightness keys
+
+`brightness-notify` (bound to the Niri brightness keys) moves a logical level
+between 0 and 100% in 4% steps. The laptop backlight and external monitors'
+DDC/CI brightness (VCP `0x10`) track the level linearly. Below 60% a software
+factor on every output also falls linearly to zero, so software does more of
+the dimming the lower you go.
+
+The factor is published at
+`$XDG_RUNTIME_DIR/brightness-notify/software-brightness`. When
+`daylightDisplay` is enabled, daylight-display multiplies it into its own
+brightness and reapplies it immediately on `SIGUSR1`. Otherwise
+`brightness-notify` sets it directly through `wl-gammarelay-rs`, if that is
+running.
+
+The `brightness-sync` user unit, enabled by
+`dev.johnrinehart.desktop.displayBrightness.enable` (on by default in the laptop
+profile, together with `hardware.i2c`), owns DDC/CI: `brightness-notify` signals it
+(`SIGUSR1`) after each level change, and it rescans monitors with `ddcutil`
+after DRM hotplug events (3 s and 15 s after the last event, to give monitors
+behind DisplayPort MST time to answer). At login and after hotplug it also
+reapplies the software factor. Monitors need DDC/CI enabled in their OSD, and
+Dell's Auto Brightness should be off so it does not fight the written value.
+
 ## Git commit transfer
 
 The `git-patch-wormhole` package transfers one or more Git heads over Magic

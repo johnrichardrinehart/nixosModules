@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 
 import datetime as dt
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from daylight_display import (
     Location,
     _parse_geoclue_output,
     current_and_next,
+    read_software_brightness,
     solar_event,
 )
 
@@ -64,6 +69,21 @@ Description: ipf fallback (from GeoIP data)
             _parse_geoclue_output(output),
             (42.06312, -71.2478, 26000.0, "ipf fallback (from GeoIP data)"),
         )
+
+
+class SoftwareBrightnessTests(unittest.TestCase):
+    def test_published_factor_is_read_and_clamped(self) -> None:
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime_dir}):
+                self.assertEqual(read_software_brightness(), 1.0)
+                path = Path(runtime_dir) / "brightness-notify" / "software-brightness"
+                path.parent.mkdir()
+                path.write_text("0.067\n")
+                self.assertAlmostEqual(read_software_brightness(), 0.067)
+                path.write_text("1.5\n")
+                self.assertEqual(read_software_brightness(), 1.0)
+                path.write_text("garbage\n")
+                self.assertEqual(read_software_brightness(), 1.0)
 
 
 if __name__ == "__main__":
