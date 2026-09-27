@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 
+import socket
 import sqlite3
+import threading
 import unittest
 from pathlib import Path
 
-from dnslib import QTYPE, RCODE, DNSRecord
+from dnslib import QTYPE, RCODE, RR, DNSRecord
 
 from nebula_registry import (
     Observation,
     Registry,
     Snapshot,
+    State,
     Zone,
     answer,
+    dns_handler,
     dns_label,
     dns_records,
     find_caller,
+    forward,
+    is_local,
     parse_hostmap,
     parse_self,
     visible_peers,
@@ -206,6 +212,79 @@ class DnsTests(unittest.TestCase):
             {"old-laptop": ["10.77.0.5"], "framework": ["10.77.0.2"]},
         )
         self.assertIsNone(dns_label("---"))
+
+
+class FakeUpstream:
+    """A UDP resolver on localhost that answers every A query with 192.0.2.1."""
+
+    def __init__(self) -> None:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.address = self.sock.getsockname()
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            data, client = self.sock.recvfrom(65535)
+            query = DNSRecord.parse(data)
+            reply = query.reply()
+            reply.add_answer(*RR.fromZone(f"{query.q.qname} 60 A 192.0.2.1"))
+            self.sock.sendto(reply.pack(), client)
+
+
+class ForwardingTests(unittest.TestCase):
+    zone = Zone(
+        "mycelium.nebula.johnrinehart.dev",
+        "10.77.0.1",
+        "lighthouse.mycelium.nebula.johnrinehart.dev",
+    )
+
+    def respond(self, name: str, upstreams: list[tuple[str, int]]) -> DNSRecord:
+        state = State()
+        state.set("mycelium", Snapshot([], {"framework": ["10.77.0.2"]}, 7))
+        handler = dns_handler(
+            "mycelium", self.zone, state, tcp=False, upstreams=upstreams
+        )
+        sent = []
+
+        class Socket:
+            def sendto(self, data: bytes, _client: object) -> None:
+                sent.append(data)
+
+        handler((DNSRecord.question(name).pack(), Socket()), ("10.77.0.3", 5353), None)
+        return DNSRecord.parse(sent[0])
+
+    def test_overlay_names_are_answered_locally_even_with_upstreams(self) -> None:
+        upstream = FakeUpstream()
+        reply = self.respond(
+            "framework.mycelium.nebula.johnrinehart.dev", [upstream.address]
+        )
+        self.assertEqual([str(rr.rdata) for rr in reply.rr], ["10.77.0.2"])
+        self.assertTrue(
+            is_local(
+                DNSRecord.question("lighthouse.mycelium.nebula.johnrinehart.dev"),
+                self.zone,
+            )
+        )
+
+    def test_other_names_are_forwarded_and_keep_the_query_id(self) -> None:
+        upstream = FakeUpstream()
+        query = DNSRecord.question("relay.magic-wormhole.io")
+        reply = DNSRecord.parse(forward(query.pack(), [upstream.address], tcp=False))
+        self.assertEqual(reply.header.id, query.header.id)
+        self.assertEqual([str(rr.rdata) for rr in reply.rr], ["192.0.2.1"])
+
+    def test_unreachable_upstreams_give_servfail_and_none_configured_refuses(
+        self,
+    ) -> None:
+        dead = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        dead.bind(("127.0.0.1", 0))
+        address = dead.getsockname()
+        dead.close()
+        self.assertEqual(
+            self.respond("example.com", [address]).header.rcode, RCODE.SERVFAIL
+        )
+        self.assertEqual(self.respond("example.com", []).header.rcode, RCODE.REFUSED)
 
 
 class VisibilityTests(unittest.TestCase):

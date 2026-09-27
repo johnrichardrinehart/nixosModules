@@ -26,7 +26,12 @@ let
 
   registryConfig = (pkgs.formats.json { }).generate "nebula-registry.json" {
     inherit stateDir consoleUser;
-    inherit (cfg) pollInterval offlineAfterPolls eventRetentionDays;
+    inherit (cfg)
+      pollInterval
+      offlineAfterPolls
+      eventRetentionDays
+      upstreamResolvers
+      ;
     ssh = lib.getExe' pkgs.openssh "ssh";
     tls = {
       certFile = "/var/lib/acme/${certName}/fullchain.pem";
@@ -147,6 +152,21 @@ in
       type = lib.types.ints.positive;
       default = 365;
       description = "Days of events to keep; peers are kept forever.";
+    };
+    upstreamResolvers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [
+        "1.1.1.1"
+        "9.9.9.9"
+      ];
+      description = ''
+        IP addresses of resolvers that receive queries outside the overlay
+        zones, tried in order. Clients without split DNS (e.g. Mobile Nebula
+        without match domains) send every lookup to the lighthouse, so
+        without forwarding only overlay names resolve for them. Empty means
+        other names are refused.
+      '';
     };
   };
 

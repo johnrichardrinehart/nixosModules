@@ -318,6 +318,58 @@ class Zone:
     site: str | None  # HTTPS site name, answered with `address` on every network
 
 
+def is_local(query: DNSRecord, zone: Zone) -> bool:
+    """Whether the registry answers this query itself (the zone or the site)."""
+    qname = str(query.q.qname).rstrip(".").lower()
+    domain = zone.domain.lower()
+    return (
+        qname == domain
+        or qname.endswith("." + domain)
+        or bool(zone.site and qname == zone.site.lower())
+    )
+
+
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise OSError("upstream closed the connection")
+        data += chunk
+    return data
+
+
+def forward(data: bytes, upstreams: list[tuple[str, int]], tcp: bool) -> bytes | None:
+    """Relay a raw query to the first upstream that answers, over the client's transport.
+
+    Clients without split DNS (e.g. Mobile Nebula without match domains) send
+    every lookup here; forwarding keeps ordinary names working for them.
+    """
+    for host, port in upstreams:
+        family = (
+            socket.AF_INET6
+            if ipaddress.ip_address(host).version == 6
+            else socket.AF_INET
+        )
+        try:
+            if tcp:
+                with socket.socket(family, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(3)
+                    sock.connect((host, port))
+                    sock.sendall(len(data).to_bytes(2, "big") + data)
+                    return _recv_exact(
+                        sock, int.from_bytes(_recv_exact(sock, 2), "big")
+                    )
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(2)
+                sock.sendto(data, (host, port))
+                response, _ = sock.recvfrom(65535)
+                return response
+        except OSError:
+            continue
+    return None
+
+
 def answer(query: DNSRecord, zone: Zone, snapshot: Snapshot) -> DNSRecord:
     reply = query.reply()
     qname = str(query.q.qname).rstrip(".").lower()
@@ -765,13 +817,21 @@ class DnsTcpServer(socketserver.ThreadingTCPServer):
 
 
 def dns_handler(
-    network: str, zone: Zone, state: State, tcp: bool
+    network: str, zone: Zone, state: State, tcp: bool, upstreams: list[tuple[str, int]]
 ) -> type[socketserver.BaseRequestHandler]:
     def respond(data: bytes) -> bytes | None:
         try:
             query = DNSRecord.parse(data)
         except DNSError:
             return None
+        if upstreams and not is_local(query, zone):
+            forwarded = forward(data, upstreams, tcp)
+            if forwarded is not None:
+                return forwarded
+            failed = query.reply()
+            failed.header.aa = 0
+            failed.header.rcode = RCODE.SERVFAIL
+            return failed.pack()
         return answer(query, zone, state.get(network)).pack()
 
     class UdpHandler(socketserver.BaseRequestHandler):
@@ -912,6 +972,7 @@ def main() -> None:
     registry = Registry(db, offline_after=interval * config["offlineAfterPolls"])
     state = State()
     tls_config = config.get("tls")
+    upstreams = [(host, 53) for host in config.get("upstreamResolvers", [])]
 
     tls = None
     if tls_config and Path(tls_config["certFile"]).exists():
@@ -926,8 +987,18 @@ def main() -> None:
     for network, net in config["networks"].items():
         zone = Zone(net["domain"], net["address"], net.get("site"))
         dns_address = (net["address"], net.get("dnsPort", 53))
-        serve(DnsUdpServer(dns_address, dns_handler(network, zone, state, tcp=False)))
-        serve(DnsTcpServer(dns_address, dns_handler(network, zone, state, tcp=True)))
+        serve(
+            DnsUdpServer(
+                dns_address,
+                dns_handler(network, zone, state, tcp=False, upstreams=upstreams),
+            )
+        )
+        serve(
+            DnsTcpServer(
+                dns_address,
+                dns_handler(network, zone, state, tcp=True, upstreams=upstreams),
+            )
+        )
         if tls:
             https = HttpsServer(
                 (net["address"], tls_config["port"]), https_handler(network, state)
