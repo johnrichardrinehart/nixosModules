@@ -126,6 +126,10 @@
                     inherit inputs pkgs;
                     inherit (inputs.nixpkgs) lib;
                   };
+                  nebula-registry = import ./nix/checks/nebula-registry.nix {
+                    inherit pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                 };
 
                 formatter = treefmtEval.config.build.wrapper;
@@ -138,9 +142,15 @@
           daylightDisplay = import ./lib/daylight-display.nix;
         };
 
-        nixosModules.default = import ./nixos-modules {
-          inherit inputs;
-          inherit (inputs.nixpkgs) lib;
+        nixosModules = {
+          default = import ./nixos-modules {
+            inherit inputs;
+            inherit (inputs.nixpkgs) lib;
+          };
+          # Self-contained, for hosts that do not import the whole JohnOS set
+          # (the lighthouse). Both are also part of `default`.
+          nebula-client = ./nixos-modules/nebula-client.nix;
+          nebula-registry = ./nixos-modules/nebula-registry.nix;
         };
 
         overlays = import ./overlays inputs;

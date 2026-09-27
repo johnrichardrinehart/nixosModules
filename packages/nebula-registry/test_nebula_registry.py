@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+
+import sqlite3
+import unittest
+from pathlib import Path
+
+from dnslib import QTYPE, RCODE, DNSRecord
+
+from nebula_registry import (
+    Observation,
+    Registry,
+    Snapshot,
+    Zone,
+    answer,
+    dns_label,
+    dns_records,
+    find_caller,
+    parse_hostmap,
+    parse_self,
+    visible_peers,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures"
+NETWORK = "mycelium"
+
+
+def observation(
+    fingerprint: str, name: str, address: str, underlay: str | None = None
+) -> Observation:
+    return Observation(
+        fingerprint=fingerprint,
+        name=name,
+        vpn_addrs=(address,),
+        groups=("peer",),
+        issuer="ca",
+        not_before=None,
+        not_after=None,
+        underlay=underlay,
+        relayed=False,
+    )
+
+
+def events(db: sqlite3.Connection) -> list[tuple[str, str]]:
+    return [
+        (fp, kind)
+        for fp, kind in db.execute("SELECT fingerprint, kind FROM events ORDER BY id")
+    ]
+
+
+class ConsoleParsingTests(unittest.TestCase):
+    def test_hostmap_yields_peer_identity_and_path(self) -> None:
+        (peer,) = parse_hostmap((FIXTURES / "list-hostmap.json").read_text())
+        self.assertEqual(peer.name, "framework")
+        self.assertEqual(peer.vpn_addrs, ("10.77.0.2/24",))
+        self.assertEqual(peer.groups, ("peer",))
+        self.assertTrue(peer.underlay)
+        self.assertFalse(peer.relayed)
+
+    def test_own_certificate_has_no_underlay(self) -> None:
+        own = parse_self((FIXTURES / "print-cert.json").read_text())
+        self.assertEqual(own.name, "lighthouse")
+        self.assertIsNone(own.underlay)
+
+    def test_zero_remote_means_no_underlay(self) -> None:
+        output = '[{"cert": {"fingerprint": "f", "details": {"name": "n", "networks": ["10.77.0.9/24"]}},'
+        output += ' "currentRemote": "", "currentRelaysToMe": ["10.77.0.1"]}]'
+        (peer,) = parse_hostmap(output)
+        self.assertIsNone(peer.underlay)
+        self.assertTrue(peer.relayed)
+
+
+class LivenessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db = sqlite3.connect(":memory:")
+        self.registry = Registry(self.db, offline_after=30)
+        self.peer = observation("fp1", "framework", "10.77.0.2/24", "1.2.3.4:5")
+
+    def test_first_sighting_records_history_and_online(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        self.assertEqual(events(self.db), [("fp1", "first_seen"), ("fp1", "online")])
+        (peer,) = self.registry.peers(NETWORK)
+        self.assertEqual(
+            (peer["first_seen"], peer["last_seen"], peer["online"]), (100, 100, True)
+        )
+
+    def test_goes_offline_only_after_missed_polls_and_keeps_last_seen(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        self.registry.sweep(NETWORK, now=130)
+        self.assertTrue(self.registry.peers(NETWORK)[0]["online"])
+        self.registry.sweep(NETWORK, now=131)
+        (peer,) = self.registry.peers(NETWORK)
+        self.assertFalse(peer["online"])
+        self.assertEqual(peer["last_seen"], 100)
+        self.assertEqual(events(self.db)[-1], ("fp1", "offline"))
+
+    def test_return_is_online_again_not_first_seen(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        self.registry.sweep(NETWORK, now=200)
+        self.registry.record(NETWORK, [self.peer], now=210)
+        self.assertEqual(
+            events(self.db),
+            [
+                ("fp1", "first_seen"),
+                ("fp1", "online"),
+                ("fp1", "offline"),
+                ("fp1", "online"),
+            ],
+        )
+        self.assertEqual(self.registry.peers(NETWORK)[0]["first_seen"], 100)
+
+    def test_underlay_change_is_an_event(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        moved = observation("fp1", "framework", "10.77.0.2/24", "5.6.7.8:9")
+        self.registry.record(NETWORK, [moved], now=110)
+        self.assertEqual(events(self.db)[-1], ("fp1", "address_changed"))
+        self.assertEqual(self.registry.peers(NETWORK)[0]["last_underlay"], "5.6.7.8:9")
+
+    def test_new_certificate_for_same_name_keeps_old_row(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        reissued = observation("fp2", "framework", "10.77.0.2/24", "1.2.3.4:5")
+        self.registry.record(NETWORK, [reissued], now=110)
+        self.assertIn(("fp2", "cert_changed"), events(self.db))
+        self.assertEqual(
+            {p["fingerprint"] for p in self.registry.peers(NETWORK)}, {"fp1", "fp2"}
+        )
+
+    def test_state_survives_restart(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        restarted = Registry(self.db, offline_after=30)
+        self.assertTrue(restarted.peers(NETWORK)[0]["online"])
+        restarted.record(NETWORK, [self.peer], now=110)
+        self.assertEqual(events(self.db).count(("fp1", "online")), 1)
+
+    def test_networks_are_separate(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        self.registry.record("other", [], now=100)
+        self.registry.sweep("other", now=1000)
+        self.assertEqual(self.registry.peers("other"), [])
+        self.assertTrue(self.registry.peers(NETWORK)[0]["online"])
+
+    def test_prune_drops_old_events_only(self) -> None:
+        self.registry.record(NETWORK, [self.peer], now=100)
+        self.registry.prune(now=100 + 366 * 86400, retention_days=365)
+        self.assertEqual(events(self.db), [])
+        self.assertEqual(len(self.registry.peers(NETWORK)), 1)
+
+
+def peer(name: str, networks: list[str], last_seen: float, online: bool = True) -> dict:
+    return {
+        "name": name,
+        "vpn_addrs": networks,
+        "last_seen": last_seen,
+        "online": online,
+    }
+
+
+class DnsTests(unittest.TestCase):
+    zone = Zone(
+        "mycelium.nebula.johnrinehart.dev",
+        "10.77.0.1",
+        "lighthouse.mycelium.nebula.johnrinehart.dev",
+    )
+
+    def resolve(
+        self, name: str, qtype: str = "A", records: dict | None = None
+    ) -> DNSRecord:
+        snapshot = Snapshot(
+            [], records if records is not None else {"framework": ["10.77.0.2"]}, 7
+        )
+        return answer(DNSRecord.question(name, qtype), self.zone, snapshot)
+
+    def test_peer_name_resolves_to_overlay_address(self) -> None:
+        reply = self.resolve("framework.mycelium.nebula.johnrinehart.dev")
+        self.assertEqual([str(rr.rdata) for rr in reply.rr], ["10.77.0.2"])
+
+    def test_site_resolves_to_this_networks_lighthouse(self) -> None:
+        reply = self.resolve("Lighthouse.Mycelium.nebula.johnrinehart.dev", records={})
+        self.assertEqual([str(rr.rdata) for rr in reply.rr], ["10.77.0.1"])
+
+    def test_unknown_name_in_zone_is_nxdomain(self) -> None:
+        self.assertEqual(
+            self.resolve("nope.mycelium.nebula.johnrinehart.dev").header.rcode,
+            RCODE.NXDOMAIN,
+        )
+
+    def test_other_zones_are_refused(self) -> None:
+        self.assertEqual(self.resolve("example.com").header.rcode, RCODE.REFUSED)
+        self.assertEqual(
+            self.resolve("a.b.mycelium.nebula.johnrinehart.dev").header.rcode,
+            RCODE.NXDOMAIN,
+        )
+
+    def test_missing_type_is_nodata_with_soa(self) -> None:
+        reply = self.resolve("framework.mycelium.nebula.johnrinehart.dev", "AAAA")
+        self.assertEqual((reply.header.rcode, reply.rr), (RCODE.NOERROR, []))
+        self.assertEqual(reply.auth[0].rtype, QTYPE.SOA)
+
+    def test_labels_come_from_certificate_names_latest_wins(self) -> None:
+        peers = [
+            peer("Old Laptop", ["10.77.0.5/24"], 1),
+            peer("framework", ["10.77.0.3/24"], 1),
+            peer("framework", ["10.77.0.2/24"], 2),
+        ]
+        self.assertEqual(
+            dns_records(peers),
+            {"old-laptop": ["10.77.0.5"], "framework": ["10.77.0.2"]},
+        )
+        self.assertIsNone(dns_label("---"))
+
+
+class VisibilityTests(unittest.TestCase):
+    def test_caller_sees_peers_in_its_certificate_networks(self) -> None:
+        peers = [
+            peer("lighthouse", ["10.77.0.1/24"], 1),
+            peer("framework", ["10.77.0.2/24"], 1),
+            peer("elsewhere", ["10.78.0.4/24"], 1),
+        ]
+        caller = find_caller(peers, "10.77.0.2")
+        self.assertEqual(caller["name"], "framework")
+        self.assertEqual(
+            [p["name"] for p in visible_peers(peers, caller)],
+            ["lighthouse", "framework"],
+        )
+
+    def test_unknown_source_is_no_caller(self) -> None:
+        self.assertIsNone(
+            find_caller([peer("framework", ["10.77.0.2/24"], 1)], "10.77.0.9")
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -80,6 +80,8 @@
     ./locale.nix
     ./network.nix
     ./monstar.nix
+    ./nebula-client.nix
+    ./nebula-registry.nix
     ./nix.nix
     ./obsidian.nix
     ./oh-my-posh.nix
