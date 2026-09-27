@@ -10,6 +10,7 @@ each caller the peers inside its own certificate's networks.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import html
 import ipaddress
 import json
@@ -393,59 +394,337 @@ def visible_peers(
     ]
 
 
-def _when(ts: float | None) -> str:
-    if ts is None:
-        return ""
-    return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(ts))
+def _utc(ts: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+
+
+def _ago(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 5:
+        return "just now"
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds >= size:
+            return f"{seconds // size} {unit} ago"
+    return f"{seconds} s ago"
+
+
+def _expiry(not_after: str | None, now: float) -> tuple[float, str, str]:
+    """(sort key, label, css class) for a certificate's notAfter."""
+    if not not_after:
+        return (0, "—", "")
+    try:
+        expires = dt.datetime.fromisoformat(not_after).timestamp()
+    except ValueError:
+        return (0, html.escape(not_after), "")
+    days = int((expires - now) // 86400)
+    level = "bad" if days < 7 else "warn" if days < 30 else ""
+    return (
+        expires,
+        f"{time.strftime('%Y-%m-%d', time.gmtime(expires))} <small>{days} d</small>",
+        level,
+    )
+
+
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@NETWORK@ · Nebula</title>
+<script>
+// Apply a saved theme before first paint; without one the page follows the system.
+(() => {
+  const theme = localStorage.getItem("nebula-theme");
+  if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+})();
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8; --card: #ffffff; --text: #17202a; --muted: #6b7785; --line: #e3e8ee;
+  --accent: #2f6fed; --ok: #1f9d55; --ok-bg: #e3f6eb; --off: #8a94a0; --off-bg: #eef1f4;
+  --relay: #b7791f; --relay-bg: #fdf3e1; --warn: #b7791f; --bad: #c53030; --hover: #f7f9fc;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+:root[data-theme=dark] {
+  color-scheme: dark;
+  --bg: #0e1116; --card: #161b22; --text: #e6edf3; --muted: #8b949e; --line: #262d36;
+  --accent: #6ea8ff; --ok: #3fb950; --ok-bg: #12301d; --off: #8b949e; --off-bg: #21262d;
+  --relay: #e3b341; --relay-bg: #3a2d0c; --warn: #e3b341; --bad: #f85149; --hover: #1c232c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) {
+    color-scheme: dark;
+    --bg: #0e1116; --card: #161b22; --text: #e6edf3; --muted: #8b949e; --line: #262d36;
+    --accent: #6ea8ff; --ok: #3fb950; --ok-bg: #12301d; --off: #8b949e; --off-bg: #21262d;
+    --relay: #e3b341; --relay-bg: #3a2d0c; --warn: #e3b341; --bad: #f85149; --hover: #1c232c;
+  }
+}
+.toolbar { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+.theme { display: inline-flex; gap: .15rem; padding: .2rem; background: var(--card); border: 1px solid var(--line);
+  border-radius: 999px; }
+.theme button { font: inherit; font-size: .8rem; color: var(--muted); background: transparent; border: 0;
+  border-radius: 999px; padding: .3rem .75rem; cursor: pointer; }
+.theme button:hover { color: var(--text); }
+.theme button[aria-pressed=true] { color: var(--text); background: var(--off-bg); font-weight: 600; }
+.theme button:focus-visible, th:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1360px; margin: 0 auto; padding: 2.5rem 1.5rem 3rem; }
+header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 1rem;
+  margin-bottom: 1.5rem; }
+h1 { margin: 0; font-size: 1.9rem; letter-spacing: -0.02em; }
+h1 span { color: var(--muted); font-weight: 500; }
+.viewer { margin: .35rem 0 0; color: var(--muted); }
+.viewer strong { color: var(--text); }
+.stats { display: flex; gap: .6rem; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .55rem .9rem;
+  min-width: 6.5rem; }
+.stat b { display: block; font-size: 1.35rem; line-height: 1.2; }
+.stat small { color: var(--muted); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.04); }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .75rem .85rem; text-align: left; white-space: nowrap; }
+td.c-name, td.c-underlay { white-space: normal; }
+.tags { display: inline; }
+th { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+  font-weight: 600; border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; }
+th:hover { color: var(--text); }
+th::after { content: "\\2195"; opacity: .25; margin-left: .35em; }
+th[aria-sort=ascending]::after { content: "\\2191"; opacity: 1; color: var(--accent); }
+th[aria-sort=descending]::after { content: "\\2193"; opacity: 1; color: var(--accent); }
+td { border-bottom: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--hover); }
+tr.offline td { color: var(--muted); }
+.mono { font-family: var(--mono); font-size: .88rem; }
+.name { font-weight: 600; }
+.you { margin-left: .4rem; font-size: .7rem; font-weight: 600; color: var(--accent);
+  border: 1px solid currentColor; border-radius: 999px; padding: 0 .45rem; vertical-align: 1px; }
+.tag { display: inline-block; margin-left: .35rem; font-size: .72rem; color: var(--muted);
+  background: var(--off-bg); border-radius: 6px; padding: 0 .4rem; }
+.pill { display: inline-flex; align-items: center; gap: .4rem; font-size: .8rem; font-weight: 600;
+  border-radius: 999px; padding: .15rem .6rem; }
+.pill.online { color: var(--ok); background: var(--ok-bg); }
+.pill.offline { color: var(--off); background: var(--off-bg); }
+.pill.direct { color: var(--accent); background: transparent; border: 1px solid var(--line); }
+.pill.relayed { color: var(--relay); background: var(--relay-bg); }
+.dot { width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
+.online .dot { animation: pulse 2.4s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(31,157,85,.45); } 70% { box-shadow: 0 0 0 7px rgba(31,157,85,0); }
+  100% { box-shadow: 0 0 0 0 rgba(31,157,85,0); } }
+small { color: var(--muted); }
+.warn { color: var(--warn); font-weight: 600; }
+.bad { color: var(--bad); font-weight: 600; }
+footer { margin-top: 1rem; color: var(--muted); font-size: .82rem; text-align: right; }
+footer a { color: var(--accent); }
+.sort-mobile { display: none; }
+.sort-mobile select { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
+  border-radius: 10px; padding: .45rem .7rem; }
+/* Medium screens: drop the least important columns instead of scrolling. */
+@media (max-width: 1200px) { .c-first { display: none; } }
+@media (max-width: 1040px) { .c-underlay { display: none; } }
+/* Phones: one card per peer, labeled fields, sorting from a menu. */
+@media (max-width: 880px) {
+  main { padding: 1.25rem 1rem 2rem; }
+  h1 { font-size: 1.5rem; }
+  header { align-items: stretch; }
+  .stats { width: 100%; }
+  .stat { flex: 1; min-width: 0; }
+  .sort-mobile { display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+    color: var(--muted); margin: 0 0 .75rem; }
+  .card { background: transparent; border: 0; box-shadow: none; border-radius: 0; overflow: visible; }
+  table, tbody { display: block; }
+  thead { display: none; }
+  tbody tr { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1rem; background: var(--card);
+    border: 1px solid var(--line); border-radius: 14px; padding: .9rem 1rem; margin-bottom: .75rem; }
+  tbody tr:hover { background: var(--card); }
+  td { display: block; padding: 0; border: 0; white-space: normal; min-width: 0; overflow-wrap: anywhere; }
+  td::before { content: attr(data-label); display: block; font-size: .68rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: .1rem; }
+  td.c-name { grid-column: 1 / -1; font-size: 1.05rem; }
+  td.c-name::before { content: none; }
+  td.c-first, td.c-underlay { display: block; }
+  td.c-underlay { grid-column: 1 / -1; }
+}
+@media (prefers-reduced-motion: reduce) { .online .dot { animation: none; } }
+</style></head>
+<body><main>
+<div class="toolbar">
+  <div class="theme" role="group" aria-label="Color theme">
+    <button type="button" data-theme-choice="system">System</button>
+    <button type="button" data-theme-choice="light">Light</button>
+    <button type="button" data-theme-choice="dark">Dark</button>
+  </div>
+</div>
+<header>
+  <div>
+    <h1><span>Nebula /</span> @NETWORK@</h1>
+    <p class="viewer">Viewing as <strong>@CALLER@</strong> <span class="mono">@CALLER_NETS@</span></p>
+  </div>
+  <div class="stats">
+    <div class="stat"><b>@ONLINE@</b><small>online</small></div>
+    <div class="stat"><b>@TOTAL@</b><small>known peers</small></div>
+    <div class="stat"><b>@RELAYED@</b><small>relayed</small></div>
+  </div>
+</header>
+<label class="sort-mobile">Sort by
+  <select id="sort-select">
+    <option value="2:descending">State (online first)</option>
+    <option value="0:ascending">Name</option>
+    <option value="3:descending">Last seen (newest)</option>
+    <option value="4:ascending">First seen (oldest)</option>
+    <option value="1:ascending">Overlay IP</option>
+    <option value="7:ascending">Cert expires (soonest)</option>
+  </select>
+</label>
+<div class="card"><table id="peers">
+<thead><tr>
+  <th data-type="text" class="c-name">Name</th><th data-type="num" class="c-ip">Overlay IP</th>
+  <th data-type="num" class="c-state">State</th><th data-type="num" class="c-last">Last seen</th>
+  <th data-type="num" class="c-first">First seen</th><th data-type="text" class="c-underlay">Underlay</th>
+  <th data-type="text" class="c-path">Path</th><th data-type="num" class="c-cert">Cert expires</th>
+</tr></thead>
+<tbody>
+@ROWS@
+</tbody></table></div>
+<footer>Rendered @RENDERED@ · refreshes every 30 s · <a href="/api/peers">JSON</a></footer>
+</main>
+<script>
+(() => {
+  const table = document.getElementById("peers");
+  const headers = [...table.tHead.rows[0].cells];
+  const sortBy = (index, direction) => {
+    const type = headers[index].dataset.type;
+    const rows = [...table.tBodies[0].rows];
+    const key = (row) => row.cells[index].dataset.sort ?? row.cells[index].textContent;
+    rows.sort((a, b) => {
+      const [x, y] = [key(a), key(b)];
+      const order = type === "num" ? Number(x) - Number(y) : x.localeCompare(y, undefined, { numeric: true });
+      return direction === "ascending" ? order : -order;
+    });
+    table.tBodies[0].append(...rows);
+    headers.forEach((h, i) => h.setAttribute("aria-sort", i === index ? direction : "none"));
+    sessionStorage.setItem("nebula-sort", JSON.stringify([index, direction]));
+    const option = select.querySelector(`option[value="${index}:${direction}"]`);
+    if (option) select.value = option.value;
+  };
+  const select = document.getElementById("sort-select");
+  select.addEventListener("change", () => {
+    const [index, direction] = select.value.split(":");
+    sortBy(Number(index), direction);
+  });
+  headers.forEach((th, index) => th.addEventListener("click", () => {
+    const next = th.getAttribute("aria-sort") === "ascending" ? "descending" : "ascending";
+    sortBy(index, next);
+  }));
+  const saved = JSON.parse(sessionStorage.getItem("nebula-sort") || "null");
+  if (saved) sortBy(...saved);
+  setTimeout(() => location.reload(), 30000);
+
+  const themeButtons = [...document.querySelectorAll("[data-theme-choice]")];
+  const applyTheme = (choice) => {
+    if (choice === "system") {
+      delete document.documentElement.dataset.theme;
+      localStorage.removeItem("nebula-theme");
+    } else {
+      document.documentElement.dataset.theme = choice;
+      localStorage.setItem("nebula-theme", choice);
+    }
+    themeButtons.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.themeChoice === choice)));
+  };
+  themeButtons.forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themeChoice)));
+  applyTheme(localStorage.getItem("nebula-theme") || "system");
+})();
+</script>
+</body></html>
+"""
 
 
 def render_html(
-    network: str, caller: dict[str, Any], peers: list[dict[str, Any]]
+    network: str,
+    caller: dict[str, Any],
+    peers: list[dict[str, Any]],
+    now: float | None = None,
 ) -> str:
+    now = time.time() if now is None else now
+    e = html.escape
     rows = []
-    for peer in peers:
-        cells = [
-            peer["name"],
-            ", ".join(addresses(peer["vpn_addrs"])),
-            "online" if peer["online"] else "offline",
-            _when(peer["last_seen"]),
-            _when(peer["first_seen"]),
-            peer["last_underlay"] or "",
-            "relayed" if peer["relayed"] else "direct",
-            peer["not_after"] or "",
-        ]
+    ordered = sorted(peers, key=lambda p: (not p["online"], p["name"]))
+    for peer in ordered:
         state = "online" if peer["online"] else "offline"
+        path = "relayed" if peer["relayed"] else "direct"
+        overlay = addresses(peer["vpn_addrs"])
+        overlay_key = int(ipaddress.ip_address(overlay[0])) if overlay else 0
+        you = (
+            '<span class="you">you</span>'
+            if peer["fingerprint"] == caller.get("fingerprint")
+            else ""
+        )
+        tags = "".join(
+            f'<span class="tag">{e(g)}</span>' for g in peer.get("groups") or []
+        )
+        expiry_key, expiry_label, expiry_class = _expiry(peer.get("not_after"), now)
+        cells = [
+            (
+                e(peer["name"]),
+                f'<span class="name">{e(peer["name"])}</span>{you}{tags}',
+                "",
+            ),
+            (str(overlay_key), e(", ".join(overlay)), "mono"),
+            (
+                "1" if peer["online"] else "0",
+                f'<span class="pill {state}"><span class="dot"></span>{state}</span>',
+                "",
+            ),
+            (
+                str(peer["last_seen"]),
+                f'<span title="{_utc(peer["last_seen"])}">{_ago(now - peer["last_seen"])}</span>',
+                "",
+            ),
+            (
+                str(peer["first_seen"]),
+                f'<span title="{_utc(peer["first_seen"])}">{time.strftime("%Y-%m-%d", time.gmtime(peer["first_seen"]))}</span>',
+                "",
+            ),
+            (e(peer["last_underlay"] or ""), e(peer["last_underlay"] or "—"), "mono"),
+            (path, f'<span class="pill {path}">{path}</span>', ""),
+            (str(expiry_key), expiry_label, expiry_class),
+        ]
+        columns = [
+            ("name", "Name"),
+            ("ip", "Overlay IP"),
+            ("state", "State"),
+            ("last", "Last seen"),
+            ("first", "First seen"),
+            ("underlay", "Underlay"),
+            ("path", "Path"),
+            ("cert", "Cert expires"),
+        ]
         rows.append(
             f'<tr class="{state}">'
-            + "".join(f"<td>{html.escape(str(c))}</td>" for c in cells)
+            + "".join(
+                f'<td data-sort="{key}" data-label="{label}" class="c-{column} {css}">{content}</td>'
+                for (column, label), (key, content, css) in zip(
+                    columns, cells, strict=True
+                )
+            )
             + "</tr>"
         )
-    headers = [
-        "Name",
-        "Overlay IP",
-        "State",
-        "Last seen",
-        "First seen",
-        "Underlay",
-        "Path",
-        "Cert expires",
-    ]
-    return f"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Nebula {html.escape(network)}</title>
-<style>
-body {{ font-family: sans-serif; margin: 2rem; }}
-table {{ border-collapse: collapse; }}
-th, td {{ padding: .3rem .8rem; border-bottom: 1px solid #ccc; text-align: left; }}
-tr.offline {{ color: #888; }}
-</style></head><body>
-<h1>Nebula network <code>{html.escape(network)}</code></h1>
-<p>Viewing as <strong>{html.escape(caller["name"])}</strong>
-({html.escape(", ".join(caller["vpn_addrs"]))})</p>
-<table><thead><tr>{"".join(f"<th>{h}</th>" for h in headers)}</tr></thead>
-<tbody>
-{chr(10).join(rows)}
-</tbody></table></body></html>
-"""
+    replacements = {
+        "@NETWORK@": e(network),
+        "@CALLER@": e(caller["name"]),
+        "@CALLER_NETS@": e(", ".join(caller["vpn_addrs"])),
+        "@ONLINE@": str(sum(p["online"] for p in peers)),
+        "@TOTAL@": str(len(peers)),
+        "@RELAYED@": str(sum(p["relayed"] and p["online"] for p in peers)),
+        "@RENDERED@": _utc(now),
+        "@ROWS@": "\n".join(rows),
+    }
+    page = PAGE
+    for marker, value in replacements.items():
+        page = page.replace(marker, value)
+    return page
 
 
 class State:
