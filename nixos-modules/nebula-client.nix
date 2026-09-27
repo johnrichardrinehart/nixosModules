@@ -96,6 +96,19 @@ in
       ];
       description = "Ports other peers may open on this host.";
     };
+    peerSshPorts = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "22" ];
+      example = [
+        "22"
+        "8022"
+      ];
+      description = ''
+        TCP ports this host may open on other peers (the peer group) for SSH.
+        Android SSH servers such as Termux's listen on 8022 because apps
+        cannot bind ports below 1024.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -112,14 +125,25 @@ in
         respond = true;
       };
       # Contact with the lighthouse is always initiated from this host; the
-      # stateful firewall admits the replies.
+      # stateful firewall admits the replies. Peers may ping and SSH each
+      # other; the lighthouse is not in the peer group, so it is never a target.
       firewall.outbound = [
         (toLighthouse "icmp" "any")
         (toLighthouse "tcp" "22")
         (toLighthouse "udp" "53")
         (toLighthouse "tcp" "53")
         (toLighthouse "tcp" "443")
-      ];
+        {
+          port = "any";
+          proto = "icmp";
+          group = cfg.peerGroup;
+        }
+      ]
+      ++ map (port: {
+        inherit port;
+        proto = "tcp";
+        group = cfg.peerGroup;
+      }) cfg.peerSshPorts;
       firewall.inbound = map (rule: rule // { group = cfg.peerGroup; }) cfg.inbound;
     };
 
