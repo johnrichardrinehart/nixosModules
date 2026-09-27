@@ -118,8 +118,12 @@ in
       description = "Wayland display gamma control";
       wantedBy = [ "graphical-session.target" ];
       partOf = [ "graphical-session.target" ];
-      after = [ "graphical-session.target" ];
+      # Ordering after graphical-session.target forms a cycle with units the
+      # target wants (daylight-display), so systemd drops this job at login.
+      after = [ "niri.service" ];
       serviceConfig = {
+        Type = "dbus";
+        BusName = "rs.wl-gammarelay";
         ExecStart = "${lib.getExe pkgs.wl-gammarelay-rs} run";
         Restart = "on-failure";
         RestartSec = "2s";
