@@ -153,14 +153,20 @@ in
     # each start. `+` runs them as root: resolved refuses the unprivileged
     # Nebula service user.
     services.resolved.enable = true;
-    systemd.services."nebula@${network}".serviceConfig.ExecStartPost =
-      let
-        resolvectl = "${config.systemd.package}/bin/resolvectl";
-      in
-      [
-        "+${resolvectl} dns ${device} ${lighthouse}"
-        "+${resolvectl} domain ${device} ~${zone}"
-        "+${resolvectl} default-route ${device} false"
-      ];
+    systemd.services."nebula@${network}" = {
+      # The lighthouse endpoint is usually a DNS name. Wait for a usable
+      # network so Nebula can resolve it and reach the lighthouse at start.
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ];
+      serviceConfig.ExecStartPost =
+        let
+          resolvectl = "${config.systemd.package}/bin/resolvectl";
+        in
+        [
+          "+${resolvectl} dns ${device} ${lighthouse}"
+          "+${resolvectl} domain ${device} ~${zone}"
+          "+${resolvectl} default-route ${device} false"
+        ];
+    };
   };
 }
