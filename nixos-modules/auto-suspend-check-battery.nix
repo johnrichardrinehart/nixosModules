@@ -4,6 +4,8 @@
   criticalLevel,
   notificationLevels,
   confirmSshActivityCommand ? "",
+  dismissNotificationsScript,
+  notificationIdsFile,
 }:
 
 pkgs.writeShellScript "check-battery" ''
@@ -13,6 +15,7 @@ pkgs.writeShellScript "check-battery" ''
   STATE_DIR="/var/lib/auto-suspend"
   STATE_FILE="$STATE_DIR/last-action"
   NOTIFIED_FILE="$STATE_DIR/notified-levels"
+  NOTIFICATION_IDS_FILE=${notificationIdsFile}
   ${pkgs.coreutils}/bin/mkdir -p "$STATE_DIR"
 
   # Function to suspend with fallback
@@ -57,9 +60,20 @@ pkgs.writeShellScript "check-battery" ''
         # Get username from UID
         username=$(${pkgs.coreutils}/bin/id -un "$uid" 2>/dev/null || echo "")
         if [ -n "$username" ]; then
-          DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-            ${pkgs.su}/bin/su -s ${pkgs.bash}/bin/sh "$username" -c \
-            "${pkgs.libnotify}/bin/notify-send --urgency=$urgency --app-name='Auto-Suspend' '$title' '$message'" 2>/dev/null || true
+          if notification_id=$(
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+              ${pkgs.su}/bin/su -s ${pkgs.bash}/bin/sh "$username" -c \
+              "${pkgs.libnotify}/bin/notify-send --print-id --urgency=$urgency --app-name='Auto-Suspend' '$title' '$message'" \
+              2>/dev/null
+          ); then
+            case "$notification_id" in
+              "" | *[!0-9]*) continue ;;
+            esac
+            {
+              ${pkgs.util-linux}/bin/flock 9 || exit 1
+              printf '%s %s\n' "$uid" "$notification_id" >> "$NOTIFICATION_IDS_FILE"
+            } 9>"$NOTIFICATION_IDS_FILE.lock"
+          fi
         fi
       fi
     done
@@ -68,6 +82,7 @@ pkgs.writeShellScript "check-battery" ''
   # Don't suspend if charging or fully charged
   if [ "$STATE" = "charging" ] || [ "$STATE" = "fully-charged" ]; then
     echo "Battery is $STATE ($PERCENTAGE%, $ENERGY Wh), not suspending"
+    ${dismissNotificationsScript}
     # Clear state files when charging
     ${pkgs.coreutils}/bin/rm -f "$STATE_FILE" "$NOTIFIED_FILE"
     exit 0
@@ -176,8 +191,9 @@ pkgs.writeShellScript "check-battery" ''
   if [ "$CAPACITY_LEVEL" != "low" ] && [ "$CAPACITY_LEVEL" != "critical" ] && [ -n "$LAST_ACTION" ]; then
     echo "Battery recovered (capacity-level=$CAPACITY_LEVEL), clearing state"
     ${pkgs.coreutils}/bin/rm -f "$STATE_FILE"
+    ${dismissNotificationsScript}
   fi
 
-  # Note: Notification state is only cleared when charging (see above)
-  # This ensures one notification per level per discharge cycle
+  # Keep notified levels until charging starts.
+  # This limits each level to one warning per discharge cycle.
 ''
