@@ -5,17 +5,16 @@
   notificationLevels,
   confirmSshActivityCommand ? "",
   dismissNotificationsScript,
-  notificationIdsFile,
+  sendNotificationScript,
+  stateDir ? "/var/lib/auto-suspend",
 }:
 
 pkgs.writeShellScript "check-battery" ''
   set -euo pipefail
 
-  # State files to track actions and notifications
-  STATE_DIR="/var/lib/auto-suspend"
+  STATE_DIR="''${AUTO_SUSPEND_STATE_DIR:-${stateDir}}"
   STATE_FILE="$STATE_DIR/last-action"
   NOTIFIED_FILE="$STATE_DIR/notified-levels"
-  NOTIFICATION_IDS_FILE=${notificationIdsFile}
   ${pkgs.coreutils}/bin/mkdir -p "$STATE_DIR"
 
   # Function to suspend with fallback
@@ -48,43 +47,31 @@ pkgs.writeShellScript "check-battery" ''
   LOW_ENERGY_THRESHOLD=$(echo "$ENERGY_FULL * ${toString lowLevel} / 100" | ${pkgs.bc}/bin/bc -l)
   CRITICAL_ENERGY_THRESHOLD=$(echo "$ENERGY_FULL * ${toString criticalLevel} / 100" | ${pkgs.bc}/bin/bc -l)
 
-  # Function to send notification to user session
-  send_notification() {
-    local title="$1"
-    local message="$2"
-    local urgency="$3"
-
-    # Find the user's UID and DBUS session
-    for uid in $(${pkgs.coreutils}/bin/ls /run/user/ 2>/dev/null); do
-      if [ -S "/run/user/$uid/bus" ]; then
-        # Get username from UID
-        username=$(${pkgs.coreutils}/bin/id -un "$uid" 2>/dev/null || echo "")
-        if [ -n "$username" ]; then
-          if notification_id=$(
-            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-              ${pkgs.su}/bin/su -s ${pkgs.bash}/bin/sh "$username" -c \
-              "${pkgs.libnotify}/bin/notify-send --print-id --urgency=$urgency --app-name='Auto-Suspend' '$title' '$message'" \
-              2>/dev/null
-          ); then
-            case "$notification_id" in
-              "" | *[!0-9]*) continue ;;
-            esac
-            {
-              ${pkgs.util-linux}/bin/flock 9 || exit 1
-              printf '%s %s\n' "$uid" "$notification_id" >> "$NOTIFICATION_IDS_FILE"
-            } 9>"$NOTIFICATION_IDS_FILE.lock"
-          fi
-        fi
-      fi
-    done
+  reset_discharge_cycle() {
+    ${dismissNotificationsScript}
+    ${pkgs.coreutils}/bin/rm -f "$STATE_FILE" "$NOTIFIED_FILE"
   }
 
-  # Don't suspend if charging or fully charged
-  if [ "$STATE" = "charging" ] || [ "$STATE" = "fully-charged" ]; then
+  current_state() {
+    ${pkgs.upower}/bin/upower -i "$BATTERY_PATH" |
+      ${pkgs.gnugrep}/bin/grep -w state |
+      ${pkgs.gawk}/bin/awk '{print $2}'
+  }
+
+  exit_unless_discharging() {
+    local latest_state
+    latest_state=$(current_state)
+    if [ "$latest_state" != "discharging" ]; then
+      echo "Battery is $latest_state, cancelling discharge actions"
+      reset_discharge_cycle
+      exit 0
+    fi
+  }
+
+  # Warnings and suspend actions are valid only while power is discharging.
+  if [ "$STATE" != "discharging" ]; then
     echo "Battery is $STATE ($PERCENTAGE%, $ENERGY Wh), not suspending"
-    ${dismissNotificationsScript}
-    # Clear state files when charging
-    ${pkgs.coreutils}/bin/rm -f "$STATE_FILE" "$NOTIFIED_FILE"
+    reset_discharge_cycle
     exit 0
   fi
 
@@ -120,6 +107,9 @@ pkgs.writeShellScript "check-battery" ''
 
   # Send notification for the lowest (most urgent) uncrossed threshold only
   if [ -n "$NOTIFY_LEVEL" ]; then
+    # UPower can change state after the initial snapshot.
+    exit_unless_discharging
+
     echo "Battery crossed $NOTIFY_LEVEL% threshold, sending notification"
 
     # Determine urgency and message based on current battery percentage and what action will be taken
@@ -143,7 +133,7 @@ pkgs.writeShellScript "check-battery" ''
       message="Battery at $PERCENTAGE%. Please plug in charger."
     fi
 
-    send_notification "Low Battery" "$message" "$urgency"
+    ${sendNotificationScript} "Low Battery" "$message" "$urgency"
 
     # Mark ALL crossed levels as notified to avoid duplicate notifications
     for level in $NOTIFICATION_LEVELS; do
@@ -162,6 +152,7 @@ pkgs.writeShellScript "check-battery" ''
         echo "SSH activity detected, deferring battery auto-suspend"
         exit 0
       fi
+      exit_unless_discharging
       echo "Battery critical (capacity-level=$CAPACITY_LEVEL or $ENERGY Wh < $CRITICAL_ENERGY_THRESHOLD Wh [${toString criticalLevel}%]), attempting suspend-then-hibernate"
       echo "critical" > "$STATE_FILE"
       do_suspend
@@ -178,6 +169,7 @@ pkgs.writeShellScript "check-battery" ''
         echo "SSH activity detected, deferring battery auto-suspend"
         exit 0
       fi
+      exit_unless_discharging
       echo "Battery low (capacity-level=$CAPACITY_LEVEL or $ENERGY Wh < $LOW_ENERGY_THRESHOLD Wh [${toString lowLevel}%]), attempting suspend-then-hibernate"
       echo "low" > "$STATE_FILE"
       do_suspend

@@ -110,6 +110,10 @@
                     inherit inputs pkgs;
                     inherit (inputs.nixpkgs) lib;
                   };
+                  auto-suspend-module = import ./nix/checks/auto-suspend-module.nix {
+                    inherit inputs pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                   brightness-sync = import ./nix/checks/brightness-sync.nix {
                     inherit pkgs;
                     inherit (inputs.nixpkgs) lib;
