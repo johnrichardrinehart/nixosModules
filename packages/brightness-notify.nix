@@ -20,11 +20,12 @@ writeShellApplication {
 
   # The user-facing level is logical: 0-100 in 4% steps. At or above the knee,
   # the hardware percentage equals the level. Below the knee, it falls linearly
-  # from the knee to dim_percent at dim_level, so it is above 21% at level 0. The
-  # laptop backlight and, through brightness-sync, external monitors' DDC/CI
-  # brightness follow the hardware percentage. A software factor applied to
-  # every output through wl-gammarelay-rs is the hardware percentage divided by
-  # the knee, so software carries more of the dimming as the level approaches 0.
+  # from the knee to dim_percent at dim_level. Level 0 sets it to 0, so the
+  # screen is black. The laptop backlight and, through brightness-sync,
+  # external monitors' DDC/CI brightness follow the hardware percentage. A
+  # software factor applied to every output through wl-gammarelay-rs is the
+  # hardware percentage divided by the knee, so software carries more of the
+  # dimming as the level approaches 0.
   #
   # The level is read back from the backlight, so the mapping must stay
   # invertible on the step grid.
@@ -84,7 +85,13 @@ writeShellApplication {
     esac
 
     # Hardware percent, scaled by run to stay integral.
-    hardware=$(( level >= knee ? level * run : knee * run - (knee - level) * slope ))
+    if (( level == 0 )); then
+      hardware=0
+    elif (( level >= knee )); then
+      hardware=$(( level * run ))
+    else
+      hardware=$(( knee * run - (knee - level) * slope ))
+    fi
 
     if [ "$action" != sync ]; then
       brightnessctl --class=backlight --quiet set \
