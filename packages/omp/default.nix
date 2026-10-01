@@ -50,7 +50,7 @@ let
       name = "omp";
       inherit runtimeInputs;
       text = ''
-        exec nix --tarball-ttl 3600 run --impure --file ${ompExpr} "" -- ${
+        exec nix --tarball-ttl 86400 run --impure --file ${ompExpr} "" -- ${
           lib.escapeShellArgs (
             lib.concatMap (plugin: [
               "--extension"
