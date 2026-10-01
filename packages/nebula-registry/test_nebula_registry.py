@@ -167,6 +167,7 @@ class DnsTests(unittest.TestCase):
         "mycelium.nebula.johnrinehart.dev",
         "10.77.0.1",
         "lighthouse.mycelium.nebula.johnrinehart.dev",
+        ("mycelium.internal",),
     )
 
     def resolve(
@@ -179,6 +180,10 @@ class DnsTests(unittest.TestCase):
 
     def test_peer_name_resolves_to_overlay_address(self) -> None:
         reply = self.resolve("framework.mycelium.nebula.johnrinehart.dev")
+        self.assertEqual([str(rr.rdata) for rr in reply.rr], ["10.77.0.2"])
+
+    def test_peer_name_resolves_in_alias_zone(self) -> None:
+        reply = self.resolve("framework.mycelium.internal")
         self.assertEqual([str(rr.rdata) for rr in reply.rr], ["10.77.0.2"])
 
     def test_site_resolves_to_this_networks_lighthouse(self) -> None:

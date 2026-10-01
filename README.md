@@ -22,6 +22,10 @@ status page for each overlay. The page updates its counts and peer rows every
 second without a page reload. The registry poll interval controls when new
 Nebula observations become available.
 
+The registry also serves every peer as `<peer>.<network>.internal`. Nebula
+clients route that private zone to the lighthouse by default. Configure
+`aliases` on the registry and `dnsAliases` on clients for more private zones.
+
 ## SSH tmux sessions
 
 The laptop profile starts each interactive SSH shell in a new tmux session.

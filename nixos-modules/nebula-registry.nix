@@ -41,6 +41,7 @@ let
     networks = lib.mapAttrs (name: net: {
       inherit (net) address consolePort;
       domain = zone name;
+      aliases = [ "${name}.internal" ] ++ net.aliases;
       site = site name;
     }) cfg.networks;
   };
@@ -117,6 +118,12 @@ in
               type = lib.types.port;
               example = 2222;
               description = "Localhost port for this network's Nebula debug console.";
+            };
+            aliases = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              example = [ "mycelium.internal" ];
+              description = "Additional private DNS zones beyond the default `<network>.internal` alias.";
             };
           };
         }

@@ -316,16 +316,25 @@ class Zone:
     domain: str
     address: str  # the lighthouse's overlay address on this network
     site: str | None  # HTTPS site name, answered with `address` on every network
+    aliases: tuple[str, ...] = ()
+
+
+def _zone_domain(qname: str, zone: Zone) -> str | None:
+    domain = zone.domain.lower()
+    if qname == domain or qname.endswith("." + domain):
+        return domain
+    for candidate in zone.aliases:
+        domain = candidate.lower()
+        if qname == domain or qname.endswith("." + domain):
+            return domain
+    return None
 
 
 def is_local(query: DNSRecord, zone: Zone) -> bool:
     """Whether the registry answers this query itself (the zone or the site)."""
     qname = str(query.q.qname).rstrip(".").lower()
-    domain = zone.domain.lower()
-    return (
-        qname == domain
-        or qname.endswith("." + domain)
-        or bool(zone.site and qname == zone.site.lower())
+    return _zone_domain(qname, zone) is not None or bool(
+        zone.site and qname == zone.site.lower()
     )
 
 
@@ -374,22 +383,23 @@ def answer(query: DNSRecord, zone: Zone, snapshot: Snapshot) -> DNSRecord:
     reply = query.reply()
     qname = str(query.q.qname).rstrip(".").lower()
     qtype = query.q.qtype
-    domain = zone.domain.lower()
-    primary = f"{zone.site or 'ns.' + domain}."
+    domain = _zone_domain(qname, zone)
+    primary_domain = domain or zone.domain.lower()
+    primary = f"{zone.site or 'ns.' + primary_domain}."
     soa = RR(
-        f"{domain}.",
+        f"{primary_domain}.",
         QTYPE.SOA,
         ttl=DNS_TTL,
         rdata=SOA(
             primary,
-            f"hostmaster.{domain}.",
+            f"hostmaster.{primary_domain}.",
             (snapshot.serial, 3600, 600, 86400, DNS_TTL),
         ),
     )
 
     if zone.site and qname == zone.site.lower():
         found: list[str] | None = [zone.address]
-    elif qname == domain:
+    elif domain is not None and qname == domain:
         if qtype in (QTYPE.SOA, QTYPE.ANY):
             reply.add_answer(soa)
         if qtype in (QTYPE.NS, QTYPE.ANY):
@@ -397,7 +407,7 @@ def answer(query: DNSRecord, zone: Zone, snapshot: Snapshot) -> DNSRecord:
         if not reply.rr:
             reply.add_auth(soa)
         return reply
-    elif qname.endswith("." + domain):
+    elif domain is not None and qname.endswith("." + domain):
         label = qname[: -len(domain) - 1]
         found = None if "." in label else snapshot.records.get(label)
         if found is None:
@@ -1035,7 +1045,12 @@ def main() -> None:
 
     consoles = {}
     for network, net in config["networks"].items():
-        zone = Zone(net["domain"], net["address"], net.get("site"))
+        zone = Zone(
+            net["domain"],
+            net["address"],
+            net.get("site"),
+            tuple(net.get("aliases", ())),
+        )
         dns_address = (net["address"], net.get("dnsPort", 53))
         serve(
             DnsUdpServer(

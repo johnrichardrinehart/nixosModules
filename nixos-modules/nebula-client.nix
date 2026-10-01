@@ -8,6 +8,15 @@ let
   inherit (cfg) network;
   lighthouse = cfg.lighthouse.address;
   zone = "${network}.${cfg.parentDomain}";
+  routedZones = lib.escapeShellArgs (
+    map (domain: "~${domain}") (
+      [
+        zone
+        "${network}.internal"
+      ]
+      ++ cfg.dnsAliases
+    )
+  );
   device =
     let
       configured = config.services.nebula.networks.${network}.tun.device;
@@ -34,6 +43,12 @@ in
       type = lib.types.str;
       default = "nebula.johnrinehart.dev";
       description = "Parent of every VPN's DNS zone.";
+    };
+    dnsAliases = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "mycelium.internal" ];
+      description = "Additional private DNS zones beyond the default `<network>.internal` alias.";
     };
     lighthouse = {
       address = lib.mkOption {
@@ -164,7 +179,7 @@ in
         in
         [
           "+${resolvectl} dns ${device} ${lighthouse}"
-          "+${resolvectl} domain ${device} ~${zone}"
+          "+${resolvectl} domain ${device} ${routedZones}"
           "+${resolvectl} default-route ${device} false"
         ];
     };
