@@ -80,10 +80,12 @@ and color temperature in kelvin.
 ## Brightness keys
 
 `brightness-notify` (bound to the Niri brightness keys) moves a logical level
-between 0 and 100% in 4% steps. The laptop backlight and external monitors'
-DDC/CI brightness (VCP `0x10`) track the level linearly. Below 60% a software
-factor on every output also falls linearly to zero, so software does more of
-the dimming the lower you go.
+between 0 and 100% in 4% steps. At 60% and above, the hardware brightness
+equals the level. Below 60%, the hardware brightness falls linearly to 24% at
+level 4 and about 21% at level 0. The laptop backlight and external monitors'
+DDC/CI brightness (VCP `0x10`) follow the hardware brightness. A software factor
+on every output equals the hardware brightness divided by 60%, so software does
+more of the dimming the lower you go.
 
 The factor is published at
 `$XDG_RUNTIME_DIR/brightness-notify/software-brightness`. When

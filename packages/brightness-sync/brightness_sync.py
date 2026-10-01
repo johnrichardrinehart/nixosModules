@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Keep external monitors in step with the brightness-notify level.
+"""Keep external monitors in step with the laptop backlight.
 
-The level is the laptop backlight percentage rounded to brightness-notify's
-4% grid. External monitors receive the same percentage as DDC/CI brightness
-(VCP 0x10). On start and after display hotplug, the software dimming factor is
-reapplied through `brightness-notify sync` so new outputs are dimmed as well.
+External monitors receive the backlight's fraction of its maximum as DDC/CI
+brightness (VCP 0x10). brightness-notify maps its level to that fraction. On
+start and after display hotplug, the software dimming factor is reapplied
+through `brightness-notify sync` so new outputs are dimmed as well.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import subprocess
 import sys
 import time
 
-STEP = 4
 # Monitors behind DisplayPort MST can take several seconds after the DRM event
 # before their DDC/CI channel answers, so rescan once early and once late.
 SETTLE_DELAYS = (3.0, 15.0)
@@ -34,11 +33,10 @@ def failure(error: subprocess.CalledProcessError) -> str:
     return (error.stderr or error.stdout or str(error)).strip()
 
 
-def parse_level(info: str) -> int:
-    """Return the logical level from `brightnessctl --machine-readable info`."""
+def parse_backlight(info: str) -> tuple[int, int]:
+    """Return (current, maximum) from `brightnessctl --machine-readable info`."""
     _device, _class, raw, _percent, maximum = info.strip().split(",")
-    current, top = int(raw), int(maximum)
-    return (200 * current + STEP * top) // (2 * STEP * top) * STEP
+    return int(raw), int(maximum)
 
 
 def parse_detect(output: str) -> list[int]:
@@ -66,8 +64,9 @@ def parse_vcp(output: str) -> tuple[int, int]:
     return int(fields[3]), int(fields[4])
 
 
-def ddc_target(level: int, maximum: int) -> int:
-    return round(level * maximum / 100)
+def ddc_target(backlight: tuple[int, int], maximum: int) -> int:
+    current, top = backlight
+    return round(current * maximum / top)
 
 
 class Sync:
@@ -82,8 +81,8 @@ class Sync:
             command, check=True, capture_output=True, text=True
         ).stdout
 
-    def level(self) -> int:
-        return parse_level(
+    def backlight(self) -> tuple[int, int]:
+        return parse_backlight(
             self.run(
                 self.brightnessctl, "--class=backlight", "--machine-readable", "info"
             )
@@ -100,13 +99,13 @@ class Sync:
     def apply_ddc(self) -> None:
         if not self.buses:
             return
-        level = self.level()
+        backlight = self.backlight()
         for bus in self.buses:
             try:
                 current, maximum = parse_vcp(
                     self.run(self.ddcutil, "--bus", str(bus), "getvcp", "10", "--brief")
                 )
-                target = ddc_target(level, maximum)
+                target = ddc_target(backlight, maximum)
                 if current != target:
                     self.run(
                         self.ddcutil,

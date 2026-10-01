@@ -18,11 +18,16 @@ writeShellApplication {
     systemd
   ];
 
-  # The user-facing level is logical: 0-100 in 4% steps. The laptop backlight
-  # and, through brightness-sync, external monitors' DDC/CI brightness follow
-  # the level linearly. Below the knee a software factor applied to every
-  # output through wl-gammarelay-rs falls linearly to zero, so software carries
-  # more of the dimming as the level approaches 0.
+  # The user-facing level is logical: 0-100 in 4% steps. At or above the knee,
+  # the hardware percentage equals the level. Below the knee, it falls linearly
+  # from the knee to dim_percent at dim_level, so it is above 21% at level 0. The
+  # laptop backlight and, through brightness-sync, external monitors' DDC/CI
+  # brightness follow the hardware percentage. A software factor applied to
+  # every output through wl-gammarelay-rs is the hardware percentage divided by
+  # the knee, so software carries more of the dimming as the level approaches 0.
+  #
+  # The level is read back from the backlight, so the mapping must stay
+  # invertible on the step grid.
   #
   # The factor is published at $XDG_RUNTIME_DIR/brightness-notify/software-brightness.
   # daylight-display multiplies it into its own brightness; when
@@ -32,6 +37,12 @@ writeShellApplication {
 
     step=4
     knee=60
+    dim_level=4
+    dim_percent=24
+
+    # Below the knee, hardware percent = knee - (knee - level) * slope / run.
+    run=$(( knee - dim_level ))
+    slope=$(( knee - dim_percent ))
 
     action="''${1:-}"
     case "$action" in
@@ -50,7 +61,15 @@ writeShellApplication {
       exit 1
     fi
     IFS=, read -r _device _class raw _percent max <<< "$status"
-    nearest_step=$(( (200 * raw + step * max) / (2 * step * max) ))
+    if (( 100 * raw >= knee * max )); then
+      nearest_step=$(( (200 * raw + step * max) / (2 * step * max) ))
+    else
+      # Invert the hardware mapping, then round to the nearest step.
+      level_num=$(( knee * slope * max - (knee * max - 100 * raw) * run ))
+      level_den=$(( slope * max ))
+      nearest_step=$(( (2 * level_num + step * level_den) / (2 * step * level_den) ))
+      nearest_step=$(( nearest_step < 0 ? 0 : nearest_step ))
+    fi
     level=$(( nearest_step * step ))
 
     case "$action" in
@@ -64,11 +83,15 @@ writeShellApplication {
         ;;
     esac
 
+    # Hardware percent, scaled by run to stay integral.
+    hardware=$(( level >= knee ? level * run : knee * run - (knee - level) * slope ))
+
     if [ "$action" != sync ]; then
-      brightnessctl --class=backlight --quiet set "$level%"
+      brightnessctl --class=backlight --quiet set \
+        "$(( (2 * hardware * max + 100 * run) / (200 * run) ))"
     fi
 
-    permille=$(( level >= knee ? 1000 : level * 1000 / knee ))
+    permille=$(( level >= knee ? 1000 : hardware * 1000 / (knee * run) ))
     factor="$(printf '%d.%03d' $(( permille / 1000 )) $(( permille % 1000 )))"
 
     state_dir="''${XDG_RUNTIME_DIR:?}/brightness-notify"
