@@ -1,6 +1,7 @@
 {
   pkgs,
   lib,
+  fuzzel,
   niri,
   wormhole-send,
 }:
@@ -14,7 +15,7 @@ pkgs.writeShellScriptBin "niri-screenshot" ''
   notify=${lib.getExe pkgs.libnotify}
   niri=${lib.getExe niri}
   jq=${lib.getExe pkgs.jq}
-  fuzzel=${lib.getExe pkgs.fuzzel}
+  fuzzel=${lib.getExe fuzzel}
   wormhole_send=${lib.getExe wormhole-send}
   mktemp=${lib.getExe' pkgs.coreutils "mktemp"}
   mkdir=${lib.getExe' pkgs.coreutils "mkdir"}

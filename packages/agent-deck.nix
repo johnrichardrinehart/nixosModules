@@ -8,16 +8,16 @@
 }:
 buildGo126Module rec {
   pname = "agent-deck";
-  version = "1.16.16";
+  version = "1.16.22";
 
   src = fetchFromGitHub {
     owner = "asheshgoplani";
     repo = "agent-deck";
     rev = "v${version}";
-    hash = "sha256-+0T8ZJP+7W+QOT1dgVVmg46CCzM1O1UIg1+4CL8pMPE=";
+    hash = "sha256-dBY0Jnhy+6l2a1Rfe1OvT9jVM7nhyXTo0+yXKY0DeeQ=";
   };
 
-  vendorHash = "sha256-ZIBWsEa6IpoW66/kd40UNihBrbo5yjCsRIQatCbt4q8=";
+  vendorHash = "sha256-AChAtXMmFDfJzlqnUpgkyD1KCmLGxkPZtKsD0+Tnt7E=";
 
   subPackages = [ "cmd/agent-deck" ];
 
@@ -28,8 +28,9 @@ buildGo126Module rec {
   ];
   checkFlags = [
     # Keep the rest of the package tests enabled while skipping sandbox-sensitive
-    # remote-execution and interactive TUI timing checks.
-    "-skip=TestRemoteCommandParity|TestRemoteSuccessfulMutationParity|TestCloseSessionWindow_KillsExtraWindow|TestLogCgroupIsolationDecision_WiredIntoBootstrap/tui_startup_emits_line|TestPerf_ColdStart_(Help|Version)|TestStatusStale_CLI_CandidateViewAndMutatesNothing"
+    # remote-execution, interactive TUI timing, fake-codex pane process, and
+    # PATH-restricted model probe checks.
+    "-skip=TestRemoteCommandParity|TestRemoteSuccessfulMutationParity|TestCloseSessionWindow_KillsExtraWindow|TestLogCgroupIsolationDecision_WiredIntoBootstrap/tui_startup_emits_line|TestPerf_ColdStart_(Help|Version)|TestStatusStale_CLI_CandidateViewAndMutatesNothing|TestIssue2388_CapabilitiesCarryProbe|TestCodexAcceptanceGuardAcceptsFreshComposerThread|TestIssue2394_HydratePrefersLiveThreadOverGuessedPaneIdentity|TestIssue2400_ArchiveKeepsLiveCodexIdentity|TestIssue2396_FirstTurnOutputIsBoundToItsConversation"
   ];
 
   preCheck = ''

@@ -239,8 +239,8 @@ in
       config.niri."org.freedesktop.impl.portal.FileChooser" = "gnome";
     };
 
-    # Keep nixpkgs' niri derivation and vendored dependencies, adding only the
-    # active-workspace overview configuration patch.
+    # nixpkgs' niri with the downstream patches above and the patched
+    # smithay-drm-extras vendor set.
     programs.niri.package = niriWithScopedOverview;
 
     users.users.${primaryUser}.extraGroups = [ "seat" ];

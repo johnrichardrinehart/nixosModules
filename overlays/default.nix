@@ -16,16 +16,6 @@ inputs: {
           name: _: lib.nameValuePair (lib.removeSuffix ".nix" name) (packageRoot + "/${name}")
         ) packageFiles
         // lib.mapAttrs (name: _: packageRoot + "/${name}") packageDirs;
-      kdlfmt_0_1_7 = prev.kdlfmt.overrideAttrs (_old: {
-        version = "0.1.7";
-        src = final.fetchFromGitHub {
-          owner = "hougesen";
-          repo = "kdlfmt";
-          tag = "v0.1.7";
-          hash = "sha256-Ftzf4gI7E5tPo8U5ZxUMqlY5+AK5IEUUAll+GsEKYpg=";
-        };
-        cargoHash = "sha256-B/ir+Sf4uxQ9Fqmy6yEa3DMt0qdpfPrwD8lhUMOEUbo=";
-      });
       packageArgs = {
         brightness-sync.brightness-notify = johnPkgs.brightness-notify;
         clipboard-watch.clipboard-store-notify = johnPkgs.clipboard-store-notify;
@@ -66,7 +56,6 @@ inputs: {
           inherit (final) niri;
         };
         fuzzel_1_15_0.fuzzel = prev.fuzzel;
-        kdlfmt.kdlfmt = kdlfmt_0_1_7;
         kill-idle-group.onIdlePackage = johnPkgs.on-idle;
         libmoonshine = {
           diarizationModels = johnPkgs.moonshine-diarization-models;
@@ -96,6 +85,7 @@ inputs: {
         };
         niri-gather-windows.niri = final.niri;
         niri-screenshot = {
+          fuzzel = johnPkgs.fuzzel_1_15_0;
           inherit (final) niri;
           inherit (johnPkgs) wormhole-send;
         };

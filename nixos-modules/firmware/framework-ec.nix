@@ -16,9 +16,10 @@ let
         patches = [
           # Make Framework F9's Project action emit a HID display-toggle event
           # instead of the layout-dependent Win+P keyboard chord that collides
-          # with niri Mod+L on Dvorak.
+          # with niri Mod+L on Dvorak. Head commit of
+          # https://github.com/FrameworkComputer/EmbeddedController/pull/49.
           (pkgs.fetchpatch2 {
-            url = "https://patch-diff.githubusercontent.com/raw/FrameworkComputer/EmbeddedController/pull/49.patch";
+            url = "https://github.com/FrameworkComputer/EmbeddedController/commit/80591104d606ab366c6b408ba98db847fd15c560.patch";
             hash = "sha256-Z1xFZ1iYREAA72TjMZLJtLQuN0HikzFyz/MmuLqZgG4=";
           })
           ../../packages/framework-ec/framework-ec-display-toggle-key-hid-persistent.patch
