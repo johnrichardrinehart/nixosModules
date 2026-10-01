@@ -15,6 +15,13 @@ configuration repositories. It exposes:
 The companion host configuration repository is
 [`nixosConfigurations`](https://github.com/johnrichardrinehart/nixosConfigurations).
 
+## Nebula peer registry
+
+`dev.johnrinehart.nebula.registry` tracks lighthouse peers and serves a private
+status page for each overlay. The page updates its counts and peer rows every
+second without a page reload. The registry poll interval controls when new
+Nebula observations become available.
+
 ## SSH tmux sessions
 
 The laptop profile starts each interactive SSH shell in a new tmux session.

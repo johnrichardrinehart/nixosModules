@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import unittest
 from pathlib import Path
+from typing import Any
 
 from dnslib import QTYPE, RCODE, RR, DNSRecord
 
@@ -23,6 +24,7 @@ from nebula_registry import (
     is_local,
     parse_hostmap,
     parse_self,
+    render_status,
     visible_peers,
 )
 
@@ -285,6 +287,44 @@ class ForwardingTests(unittest.TestCase):
             self.respond("example.com", [address]).header.rcode, RCODE.SERVFAIL
         )
         self.assertEqual(self.respond("example.com", []).header.rcode, RCODE.REFUSED)
+
+
+class StatusRenderingTests(unittest.TestCase):
+    def test_status_contains_current_counts_and_escaped_peer_rows(self) -> None:
+        peers: list[dict[str, Any]] = [
+            {
+                "fingerprint": "caller",
+                "name": "framework",
+                "vpn_addrs": ["10.77.0.2/24"],
+                "groups": ["peer"],
+                "not_after": "2027-09-25T12:52:29+00:00",
+                "online": True,
+                "last_seen": 90,
+                "first_seen": 50,
+                "last_underlay": "192.0.2.1:4242",
+                "relayed": True,
+            },
+            {
+                "fingerprint": "other",
+                "name": "<offline>",
+                "vpn_addrs": ["10.77.0.3/24"],
+                "groups": [],
+                "not_after": None,
+                "online": False,
+                "last_seen": 80,
+                "first_seen": 40,
+                "last_underlay": None,
+                "relayed": False,
+            },
+        ]
+
+        status = render_status(peers[0], peers, now=100)
+
+        self.assertEqual(status["online"], 1)
+        self.assertEqual(status["total"], 2)
+        self.assertEqual(status["relayed"], 1)
+        self.assertIn("&lt;offline&gt;", status["rows"])
+        self.assertNotIn("<offline>", status["rows"])
 
 
 class VisibilityTests(unittest.TestCase):

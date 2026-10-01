@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from dnslib import AAAA, NS, QTYPE, RCODE, RR, SOA, A, DNSError, DNSRecord
 
@@ -447,7 +447,7 @@ def visible_peers(
 
 
 def _utc(ts: float) -> str:
-    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(ts))
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts))
 
 
 def _ago(seconds: float) -> str:
@@ -615,9 +615,9 @@ footer a { color: var(--accent); }
     <p class="viewer">Viewing as <strong>@CALLER@</strong> <span class="mono">@CALLER_NETS@</span></p>
   </div>
   <div class="stats">
-    <div class="stat"><b>@ONLINE@</b><small>online</small></div>
-    <div class="stat"><b>@TOTAL@</b><small>known peers</small></div>
-    <div class="stat"><b>@RELAYED@</b><small>relayed</small></div>
+    <div class="stat"><b id="online-count">@ONLINE@</b><small>online</small></div>
+    <div class="stat"><b id="peer-count">@TOTAL@</b><small>known peers</small></div>
+    <div class="stat"><b id="relayed-count">@RELAYED@</b><small>relayed</small></div>
   </div>
 </header>
 <label class="sort-mobile">Sort by
@@ -640,7 +640,7 @@ footer a { color: var(--accent); }
 <tbody>
 @ROWS@
 </tbody></table></div>
-<footer>Rendered @RENDERED@ · refreshes every 30 s · <a href="/api/peers">JSON</a></footer>
+<footer><span id="update-state">Rendered @RENDERED@</span> · updates every second · <a href="/api/peers">JSON</a></footer>
 </main>
 <script>
 (() => {
@@ -672,7 +672,27 @@ footer a { color: var(--accent); }
   }));
   const saved = JSON.parse(sessionStorage.getItem("nebula-sort") || "null");
   if (saved) sortBy(...saved);
-  setTimeout(() => location.reload(), 30000);
+
+  const updateState = document.getElementById("update-state");
+  const refresh = async () => {
+    try {
+      const response = await fetch("/api/status", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const status = await response.json();
+      table.tBodies[0].innerHTML = status.rows;
+      document.getElementById("online-count").textContent = String(status.online);
+      document.getElementById("peer-count").textContent = String(status.total);
+      document.getElementById("relayed-count").textContent = String(status.relayed);
+      updateState.textContent = `Rendered ${status.rendered}`;
+      const sorted = headers.findIndex((header) => header.getAttribute("aria-sort") !== "none");
+      if (sorted >= 0) sortBy(sorted, headers[sorted].getAttribute("aria-sort"));
+    } catch {
+      updateState.textContent = "Live update failed; retrying";
+    } finally {
+      setTimeout(refresh, 1000);
+    }
+  };
+  setTimeout(refresh, 1000);
 
   const themeButtons = [...document.querySelectorAll("[data-theme-choice]")];
   const applyTheme = (choice) => {
@@ -693,12 +713,19 @@ footer a { color: var(--accent); }
 """
 
 
-def render_html(
-    network: str,
+class StatusUpdate(TypedDict):
+    online: int
+    total: int
+    relayed: int
+    rendered: str
+    rows: str
+
+
+def render_status(
     caller: dict[str, Any],
     peers: list[dict[str, Any]],
     now: float | None = None,
-) -> str:
+) -> StatusUpdate:
     now = time.time() if now is None else now
     e = html.escape
     rows = []
@@ -763,15 +790,31 @@ def render_html(
             )
             + "</tr>"
         )
+    return {
+        "online": sum(p["online"] for p in peers),
+        "total": len(peers),
+        "relayed": sum(p["relayed"] and p["online"] for p in peers),
+        "rendered": _utc(now),
+        "rows": "\n".join(rows),
+    }
+
+
+def render_html(
+    network: str,
+    caller: dict[str, Any],
+    peers: list[dict[str, Any]],
+    now: float | None = None,
+) -> str:
+    status = render_status(caller, peers, now)
     replacements = {
-        "@NETWORK@": e(network),
-        "@CALLER@": e(caller["name"]),
-        "@CALLER_NETS@": e(", ".join(caller["vpn_addrs"])),
-        "@ONLINE@": str(sum(p["online"] for p in peers)),
-        "@TOTAL@": str(len(peers)),
-        "@RELAYED@": str(sum(p["relayed"] and p["online"] for p in peers)),
-        "@RENDERED@": _utc(now),
-        "@ROWS@": "\n".join(rows),
+        "@NETWORK@": html.escape(network),
+        "@CALLER@": html.escape(caller["name"]),
+        "@CALLER_NETS@": html.escape(", ".join(caller["vpn_addrs"])),
+        "@ONLINE@": str(status["online"]),
+        "@TOTAL@": str(status["total"]),
+        "@RELAYED@": str(status["relayed"]),
+        "@RENDERED@": str(status["rendered"]),
+        "@ROWS@": str(status["rows"]),
     }
     page = PAGE
     for marker, value in replacements.items():
@@ -905,6 +948,13 @@ def https_handler(network: str, state: State) -> type[BaseHTTPRequestHandler]:
                     indent=2,
                 )
                 self._send(200, "application/json", body + "\n")
+            elif path == "/api/status":
+                self._send(
+                    200,
+                    "application/json",
+                    json.dumps(render_status(caller, peers), separators=(",", ":"))
+                    + "\n",
+                )
             elif path == "/":
                 self._send(
                     200, "text/html; charset=utf-8", render_html(network, caller, peers)
