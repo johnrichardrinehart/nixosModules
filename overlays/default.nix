@@ -60,6 +60,7 @@ inputs: {
         libmoonshine = {
           diarizationModels = johnPkgs.moonshine-diarization-models;
           onnxruntime = johnPkgs.onnxruntime-openvino;
+          inherit (johnPkgs) openvino;
         };
         lock-idle-ssh-sessions = {
           idleTimeoutSeconds = 5 * 60;
@@ -95,6 +96,7 @@ inputs: {
         };
         omp.context-mode = johnPkgs.context-mode;
         on-idle.idleTimeoutSeconds = 5 * 60;
+        onnxruntime-openvino.openvino = johnPkgs.openvino;
         repo-manager = {
           inherit (inputs) repo-manager;
           system = final.stdenv.hostPlatform.system;
