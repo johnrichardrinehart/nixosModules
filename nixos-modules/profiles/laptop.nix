@@ -48,7 +48,7 @@ in
         suspendPromptTimeoutSeconds = lib.mkDefault (60 * 15);
         terminalMultiplexer = lib.mkDefault "tmux";
         forceInteractiveShellsIntoMultiplexer = lib.mkDefault true;
-        multiplexerSessionName = lib.mkDefault "main";
+        multiplexerSessionName = lib.mkDefault "ssh";
       };
 
       packages = {

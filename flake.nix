@@ -134,6 +134,10 @@
                     inherit pkgs;
                     inherit (inputs.nixpkgs) lib;
                   };
+                  ssh-session = import ./nix/checks/ssh-session.nix {
+                    inherit pkgs;
+                    inherit (inputs.nixpkgs) lib;
+                  };
                 };
 
                 formatter = treefmtEval.config.build.wrapper;

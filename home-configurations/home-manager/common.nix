@@ -657,6 +657,11 @@ in
           };
           sshSessionLockCfg = osConfig.dev.johnrinehart.sshSessionLock;
           tmuxSocketCfg = osConfig.dev.johnrinehart.tmux;
+          sshSessionPackage = pkgs.dev.johnrinehart.ssh-session.override {
+            inherit (tmuxSocketCfg) socketDir socketName;
+            sessionNamePrefix = sshSessionLockCfg.multiplexerSessionName;
+            tmux = pkgs.dev.johnrinehart.tmux;
+          };
           multiplexerAutoAttach =
             lib.optionalString
               (
@@ -665,15 +670,8 @@ in
                 && sshSessionLockCfg.terminalMultiplexer == "tmux"
               )
               ''
-                if [[ -n "$SSH_TTY" && -z "$TMUX" ]]; then
-                  tmux_socket_dir=${lib.escapeShellArg tmuxSocketCfg.socketDir}
-                  tmux_socket_name=${lib.escapeShellArg tmuxSocketCfg.socketName}
-                  tmux_session_prefix=${lib.escapeShellArg sshSessionLockCfg.multiplexerSessionName}
-                  tmux_uid="$(${lib.getExe' pkgs.coreutils "id"} -u)"
-                  tmux_session_stamp="$(${lib.getExe' pkgs.coreutils "date"} +%Y%m%dT%H%M%S)"
-                  tmux_socket="$tmux_socket_dir/tmux-$tmux_uid/$tmux_socket_name"
-                  tmux_session="$tmux_session_prefix-$tmux_session_stamp-$$"
-                  exec ${lib.getExe pkgs.dev.johnrinehart.tmux} -S "$tmux_socket" new-session -s "$tmux_session"
+                if [[ -n "$SSH_TTY" && -z "$TMUX" && "''${SSH_SESSION_NO_TMUX:-}" != 1 ]]; then
+                  exec ${lib.getExe sshSessionPackage} new
                 fi
               '';
           kittySshIntegration = lib.optionalString kittyIntegrationEnabled ''

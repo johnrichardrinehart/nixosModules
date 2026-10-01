@@ -77,6 +77,7 @@ inputs: {
           terminalMultiplexer = "tmux";
           inherit (johnPkgs) tmux;
         };
+        ssh-session.tmux = johnPkgs.tmux;
         monstar = {
           inherit (inputs) monstar;
           system = final.stdenv.hostPlatform.system;

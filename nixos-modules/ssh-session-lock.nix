@@ -6,6 +6,11 @@
 }:
 let
   cfg = config.dev.johnrinehart.sshSessionLock;
+  sshSession = pkgs.dev.johnrinehart.ssh-session.override {
+    inherit (config.dev.johnrinehart.tmux) socketDir socketName;
+    sessionNamePrefix = cfg.multiplexerSessionName;
+    tmux = pkgs.dev.johnrinehart.tmux;
+  };
 in
 {
   options.dev.johnrinehart.sshSessionLock = {
@@ -40,14 +45,15 @@ in
 
     multiplexerSessionName = lib.mkOption {
       type = lib.types.str;
-      default = "main";
+      default = "ssh";
       description = "Session name prefix to use when forcing interactive SSH shell logins into the terminal multiplexer.";
     };
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = lib.optional (
-      cfg.terminalMultiplexer == "tmux"
-    ) pkgs.dev.johnrinehart.tmux;
+    environment.systemPackages = lib.optionals (cfg.terminalMultiplexer == "tmux") [
+      pkgs.dev.johnrinehart.tmux
+      sshSession
+    ];
   };
 }

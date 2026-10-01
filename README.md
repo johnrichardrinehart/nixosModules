@@ -15,6 +15,49 @@ configuration repositories. It exposes:
 The companion host configuration repository is
 [`nixosConfigurations`](https://github.com/johnrichardrinehart/nixosConfigurations).
 
+## SSH tmux sessions
+
+The laptop profile starts each interactive SSH shell in a new tmux session.
+Each session receives the tmux user option `@ssh-session=1`.
+The option remains set when the user renames the session.
+
+Start a session with an initial human-readable name:
+
+```console
+$ ssh -t john@$HOST ssh-session new project-name
+```
+
+Start a direct login shell without tmux:
+
+```console
+$ ssh -t john@$HOST ssh-session shell
+```
+
+This command does not create or attach a tmux session.
+
+Rename it at any time without removing the option:
+
+```console
+$ tmux rename-session project-renamed
+```
+
+List SSH-created sessions and their stable handles:
+
+```console
+$ ssh john@$HOST ssh-session list
+```
+
+Attach to a session by its handle or exact current name:
+
+```console
+$ ssh -t john@$HOST ssh-session attach s14
+$ ssh -t john@$HOST ssh-session attach project-name
+```
+
+`ssh-session attach` rejects unmarked sessions and never creates a replacement.
+A plain interactive SSH login always creates a separate session.
+The helper does not remove detached sessions automatically.
+
 ## Display breakpoint helper
 
 Consumers can build custom daylight-display schedules with the exported helper:
