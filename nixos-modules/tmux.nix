@@ -1,4 +1,9 @@
-{ config, lib, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 let
   cfg = config.dev.johnrinehart.tmux.clipboard;
 
@@ -83,6 +88,7 @@ in
 
     programs.tmux = {
       enable = lib.mkDefault true;
+      package = lib.mkDefault pkgs.dev.johnrinehart.tmux;
       secureSocket = lib.mkDefault false;
       extraConfig = lib.mkAfter ''
         # Enable OSC 52 clipboard writes through tmux, including nested tmux.

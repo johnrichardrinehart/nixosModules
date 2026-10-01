@@ -363,6 +363,7 @@ in
         )
         {
           enable = true;
+          package = pkgs.dev.johnrinehart.tmux;
           extraConfig =
             let
               tmuxAuthLock = pkgs.dev.johnrinehart.tmux-auth-lock;
