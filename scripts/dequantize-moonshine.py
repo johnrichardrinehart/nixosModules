@@ -443,6 +443,14 @@ def dequantize_model(model):
             )
             out.name = new_name
 
+    # Drop trailing empty optional inputs (e.g. SkipLayerNormalization's
+    # missing bias). An omitted trailing input means the same thing, but
+    # OpenVINO's ONNX frontend turns an explicit "" into a NullNode that its
+    # CPU and GPU plugins reject.
+    for n in model.graph.node:
+        while n.input and n.input[-1] == "":
+            n.input.pop()
+
     # Clear stale value_info from shape inference (types may have changed)
     del model.graph.value_info[:]
 

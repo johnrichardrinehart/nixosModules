@@ -1,8 +1,8 @@
 # Build libmoonshine.so from source with configurable ONNX Runtime execution providers.
 #
 # The upstream code creates ORT sessions using CPU EP only. We patch
-# moonshine-model.cpp and moonshine-streaming-model.cpp to optionally
-# append the OpenVINO EP before session creation.
+# moonshine-streaming-model.cpp to give each model its own session options
+# that append the configured provider (OpenVINO or CPU).
 {
   lib,
   stdenv,
@@ -135,12 +135,17 @@ stdenv.mkDerivation {
   ''
   + lib.optionalString useOnnxModels ''
         # Load .onnx models instead of .ort so OpenVINO EP can process the graphs.
-        sed -i 's/frontend\.ort/frontend.onnx/g; s/encoder\.ort/encoder.onnx/g; s/adapter\.ort/adapter.onnx/g; s/cross_kv\.ort/cross_kv.onnx/g; s/decoder_kv\.ort/decoder_kv.onnx/g; s/decoder_kv_with_attention\.ort/decoder_kv_with_attention.onnx/g' \
-          moonshine-streaming-model.cpp
+        substituteInPlace moonshine-streaming-model.cpp \
+          --replace-fail '"frontend.ort"' '"frontend.onnx"' \
+          --replace-fail '"encoder.ort"' '"encoder.onnx"' \
+          --replace-fail '"adapter.ort"' '"adapter.onnx"' \
+          --replace-fail '"cross_kv.ort"' '"cross_kv.onnx"' \
+          --replace-fail '"decoder_kv.ort"' '"decoder_kv.onnx"'
 
         # Add <thread> include for deferred decoder loading.
-        sed -i '/#include "moonshine-streaming-model.h"/a #include <thread>' \
-          moonshine-streaming-model.cpp
+        substituteInPlace moonshine-streaming-model.cpp \
+          --replace-fail '#include "moonshine-streaming-model.h"' '#include "moonshine-streaming-model.h"
+        #include <thread>'
 
         # NOTE: provider-specific options are NOT appended to the shared
         # ort_session_options here. OpenVINO's dynamic-shape reshape_input is
@@ -148,23 +153,25 @@ stdenv.mkDerivation {
         # given model, so each model needs its own SessionOptions.
 
         # Add decoder_loader_thread member to the struct.
-        sed -i '/#include <mutex>/a #include <thread>' moonshine-streaming-model.h
-        sed -i '/std::mutex processing_mutex;/a \
-        std::thread decoder_loader_thread; \
-        int decoder_load_result = 0;' moonshine-streaming-model.h
+        substituteInPlace moonshine-streaming-model.h \
+          --replace-fail '#include <mutex>' '#include <mutex>
+        #include <thread>' \
+          --replace-fail 'std::mutex processing_mutex;' 'std::mutex processing_mutex;
+          std::thread decoder_loader_thread;
+          int decoder_load_result = 0;'
 
         # Join decoder loader thread in destructor before releasing sessions.
-        sed -i '/MoonshineStreamingModel::~MoonshineStreamingModel/,/^}/ {
-          /ort_api->ReleaseEnv/i \
-        if (decoder_loader_thread.joinable()) decoder_loader_thread.join();
-        }' moonshine-streaming-model.cpp
+        substituteInPlace moonshine-streaming-model.cpp \
+          --replace-fail 'MoonshineStreamingModel::~MoonshineStreamingModel() {' 'MoonshineStreamingModel::~MoonshineStreamingModel() {
+          if (decoder_loader_thread.joinable()) decoder_loader_thread.join();'
 
         # Wait for decoder models in compute_cross_kv before using them.
-        sed -i '/if (state == nullptr || cross_kv_session == nullptr)/i \
-        if (decoder_loader_thread.joinable()) { \
-          decoder_loader_thread.join(); \
-          if (decoder_load_result != 0) return decoder_load_result; \
-        }' moonshine-streaming-model.cpp
+        substituteInPlace moonshine-streaming-model.cpp \
+          --replace-fail 'if (state == nullptr || cross_kv_session == nullptr) {' 'if (decoder_loader_thread.joinable()) {
+            decoder_loader_thread.join();
+            if (decoder_load_result != 0) return decoder_load_result;
+          }
+          if (state == nullptr || cross_kv_session == nullptr) {'
 
         # Load audio pipeline models synchronously, decoder models in background.
         #
@@ -280,15 +287,22 @@ stdenv.mkDerivation {
       }
     FRAGMENT
 
-        # Delete the sequential load block and replace with deferred version.
-        sed -i '/\/\/ Load sessions using ort_session_from_path/,/\/\/ Load tokenizer/{
+        # Replace the sequential load block (frontend through decoder_kv, up to
+        # the tokenizer) with the deferred version.
+        sed -i '/\/\/ Prefer the split pair so int8 weights survive ORT conversion/,/\/\/ Load tokenizer/{
           /\/\/ Load tokenizer/!{
-            /\/\/ Load sessions using ort_session_from_path/{
+            /\/\/ Prefer the split pair so int8 weights survive ORT conversion/{
               r deferred_load.cpp.fragment
             }
             d
           }
         }' moonshine-streaming-model.cpp
+        # sed succeeds even when its anchors are missing; require the swap.
+        if ! grep -q 'auto make_openvino_options' moonshine-streaming-model.cpp \
+          || grep -q 'Prefer the split pair so int8 weights survive' moonshine-streaming-model.cpp; then
+          echo "libmoonshine: deferred model loading patch did not apply" >&2
+          exit 1
+        fi
   '';
 
   installPhase = ''

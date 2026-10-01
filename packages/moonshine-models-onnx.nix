@@ -18,8 +18,10 @@ let
   dequantizeScript = ../scripts/dequantize-moonshine.py;
 
   convertScript = ''
+    import onnx
     import onnxruntime as ort
     import os, sys, shutil
+    from onnx import numpy_helper
 
     model_dir = sys.argv[1]
     out_dir = sys.argv[2]
@@ -49,6 +51,28 @@ let
         ort.InferenceSession(ort_path, so)
         size_mb = os.path.getsize(onnx_path) / 1024 / 1024
         print(f"  {output_name}.onnx: {size_mb:.1f} MB")
+
+    # Upstream splits the frontend: frontend.model.ort takes its weights as
+    # extra graph inputs, and frontend.weights.ort (no inputs) outputs them.
+    # libmoonshine only feeds those inputs for the .ort pair, so bake the
+    # weights into frontend.onnx as initializers.
+    weights_path = os.path.join(model_dir, "frontend.weights.ort")
+    frontend_path = os.path.join(out_dir, "frontend.onnx")
+    if os.path.exists(weights_path):
+        weights = ort.InferenceSession(weights_path)
+        names = [o.name for o in weights.get_outputs()]
+        values = weights.run(names, {})
+        frontend = onnx.load(frontend_path)
+        missing = set(names) - {i.name for i in frontend.graph.input}
+        if missing:
+            sys.exit(f"frontend.onnx has no inputs for weights {sorted(missing)}")
+        kept = [i for i in frontend.graph.input if i.name not in names]
+        del frontend.graph.input[:]
+        frontend.graph.input.extend(kept)
+        for name, value in zip(names, values):
+            frontend.graph.initializer.append(numpy_helper.from_array(value, name))
+        onnx.save(frontend, frontend_path)
+        print(f"Baked {len(names)} weights from frontend.weights.ort into frontend.onnx")
 
     # Copy non-model files
     for f in os.listdir(model_dir):
