@@ -117,9 +117,7 @@ inputs: {
           moonshineVoice = johnPkgs.moonshine-voice;
           model = johnPkgs.moonshine-models-onnx;
         };
-        tmux = {
-          inherit (prev) fetchpatch2 tmux;
-        };
+        tmux.tmux = prev.tmux;
         util-linux.util-linux = prev.util-linux;
       };
       johnPkgs = lib.mapAttrs (

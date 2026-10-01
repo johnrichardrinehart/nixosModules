@@ -1,10 +1,18 @@
-{ fetchpatch2, tmux }:
+{ fetchFromGitHub, tmux }:
 
-tmux.overrideAttrs (old: {
-  patches = (old.patches or [ ]) ++ [
-    (fetchpatch2 {
-      url = "https://github.com/tmux/tmux/commit/31c93c483afa4f94ef2091c8d9f25db4731d0e7f.patch";
-      hash = "sha256-JvftZZhQTntAfm9LXTKWCkDmA4gx0SgG7Okv12nNdyY=";
-    })
-  ];
-})
+tmux.overrideAttrs (
+  finalAttrs: _old: {
+    version = "3.7c";
+
+    src = fetchFromGitHub {
+      owner = "tmux";
+      repo = "tmux";
+      tag = finalAttrs.version;
+      hash = "sha256-TpZXTeXKQv6MV1vAPu5MIT52d3Pl6dYcOReZa7QANZY=";
+    };
+
+    # 3.7c contains upstream e5a2a25 (patched into 3.6a by nixpkgs) and 31c93c4,
+    # both fixes for partially initialized control-mode clients.
+    patches = [ ];
+  }
+)
